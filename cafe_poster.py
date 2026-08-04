@@ -1,6 +1,10 @@
 import os
 import requests
 
+CAFE_ID = "31767633"
+MENU_ID = "10"
+DETAIL_BASE_URL = "https://isafety.co.kr/is/job/"
+
 
 def get_access_token():
     CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
@@ -24,6 +28,7 @@ def get_access_token():
 
 
 def to_html_entity(text):
+    """비-ASCII 문자를 HTML 엔티티로 변환 (네이버 API 한글 처리용)"""
     result = ""
     for ch in text:
         if ord(ch) < 128:
@@ -33,15 +38,93 @@ def to_html_entity(text):
     return result
 
 
-def post_to_cafe(job, access_token):
-    CAFE_ID = "31767633"
-    MENU_ID = "10"
+def build_subject(job):
+    """제목 생성: [카테고리] 회사명 - 모집분야"""
+    category = job.get("category", "기타")
+    company = job.get("company", "비공개")
+    position = job.get("position", "")
 
-    # 테스트용 제목/본문
-    subject = "테스트 게시글 " + job["job_id"]
-    content = "안녕하세요. 테스트 본문입니다. 채용공고 ID: " + job["job_id"]
-    
-    encoded_subject = to_html_entity(subject)   # ⭐ 추가
+    # 회사명이 있으면 우선 사용
+    if company and company != "비공개":
+        title = "[" + category + "] " + company
+        if position and position != job.get("raw_title", "")[:50]:
+            title += " - " + position
+    else:
+        # 회사명 없으면 원본 제목 활용
+        title = "[" + category + "] " + job.get("raw_title", "채용공고")
+
+    # 네이버 카페 제목 길이 제한 (약 80자)
+    if len(title) > 80:
+        title = title[:77] + "..."
+    return title
+
+
+def build_content(job):
+    """본문 생성: 값이 있는 정보만 표시 (모르는 건 안 씀)"""
+    lines = []
+    lines.append("📌 채용 정보")
+    lines.append("")
+
+    # 회사명 (비공개면 스킵)
+    company = job.get("company", "")
+    if company and company != "비공개":
+        lines.append("🏢 회사명: " + company)
+
+    # 모집분야
+    position = job.get("position", "")
+    if position and position != "상세내용 참조":
+        lines.append("👔 모집분야: " + position)
+
+    # 담당업무
+    duty = job.get("duty", "")
+    if duty and duty != "상세내용 참조":
+        # 담당업무는 길 수 있으니 300자 제한
+        if len(duty) > 300:
+            duty = duty[:297] + "..."
+        lines.append("📝 담당업무: " + duty)
+
+    # 마감일
+    deadline = job.get("deadline", "")
+    if deadline and deadline != "채용시 마감":
+        lines.append("📅 마감일: " + deadline)
+    elif deadline == "채용시 마감":
+        lines.append("📅 마감일: 채용시 마감")
+
+    # 카테고리
+    category = job.get("category", "")
+    if category:
+        lines.append("🏷️ 분류: " + category)
+
+    lines.append("")
+    lines.append("─────────────────────────")
+    lines.append("")
+
+    # 지원 링크 (본문에서 찾은 외부 링크)
+    apply_link = job.get("apply_link", "")
+    if apply_link:
+        lines.append("🔗 지원/상세 링크")
+        lines.append(apply_link)
+        lines.append("")
+
+    # 원문 링크 (iSAFETY 상세 페이지)
+    job_id = job.get("job_id", "")
+    if job_id:
+        lines.append("📄 원문 보기 (iSAFETY)")
+        lines.append(DETAIL_BASE_URL + job_id)
+        lines.append("")
+
+    lines.append("─────────────────────────")
+    lines.append("※ 본 공고는 iSAFETY에서 자동 수집된 정보입니다.")
+    lines.append("※ 지원 전 반드시 원문을 확인해주세요.")
+
+    return "\n".join(lines)
+
+
+def post_to_cafe(job, access_token):
+    subject = build_subject(job)
+    content = build_content(job)
+
+    encoded_subject = to_html_entity(subject)
     encoded_content = to_html_entity(content)
 
     url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
@@ -54,7 +137,7 @@ def post_to_cafe(job, access_token):
         url,
         headers=headers,
         data={
-            "subject": encoded_subject,          # ⭐ 변경
+            "subject": encoded_subject,
             "content": encoded_content,
             "openyn": "true",
         },
@@ -63,8 +146,13 @@ def post_to_cafe(job, access_token):
 
     print("  📨 상태코드:", res.status_code)
     print("  📨 응답:", res.text[:300])
-    
-    result = res.json()
+
+    try:
+        result = res.json()
+    except Exception:
+        print("  ❌ JSON 파싱 실패")
+        return None
+
     status = result.get("message", {}).get("status")
     if status != "200":
         print("  ❌ 실패")
