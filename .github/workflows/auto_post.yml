@@ -1,0 +1,48 @@
+name: Auto Post iSAFETY Jobs
+
+on:
+  schedule:
+    # UTC 기준으로 등록 (KST = UTC + 9)
+    # KST 오전 9시 = UTC 00:00
+    # KST 오후 3시 = UTC 06:00
+    - cron: '0 0 * * *'
+    - cron: '0 6 * * *'
+  
+  # 수동 실행 버튼 활성화
+  workflow_dispatch:
+
+jobs:
+  post-jobs:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write  # posted_jobs.json 커밋 권한
+    
+    steps:
+      - name: 📥 저장소 체크아웃
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: 📦 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml
+      
+      - name: 🚀 자동 게시 실행
+        env:
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          NAVER_REFRESH_TOKEN: ${{ secrets.NAVER_REFRESH_TOKEN }}
+        run: python main.py
+      
+      - name: 💾 게시 이력 커밋
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add posted_jobs.json
+          git diff --staged --quiet || git commit -m "🤖 게시 이력 업데이트 [skip ci]"
+          git push
