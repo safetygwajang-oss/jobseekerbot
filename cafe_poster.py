@@ -4,7 +4,6 @@ import requests
 CAFE_ID = "31767633"
 MENU_ID = "10"
 
-
 def get_access_token():
     CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
     CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
@@ -25,18 +24,6 @@ def get_access_token():
         raise RuntimeError("토큰 재발급 실패: " + str(data))
     return data["access_token"]
 
-
-def to_html_entity(text):
-    """비-ASCII 문자를 HTML 엔티티로 변환"""
-    result = ""
-    for ch in text:
-        if ord(ch) < 128:
-            result += ch
-        else:
-            result += "&#" + str(ord(ch)) + ";"
-    return result
-
-
 def clean_forbidden_words(text):
     """출처가 드러나는 단어 제거"""
     if not text:
@@ -46,14 +33,13 @@ def clean_forbidden_words(text):
     for word in forbidden:
         text = text.replace(word, "")
     # 정리: 연속 공백, 앞뒤 특수문자 제거
-    text = text.replace("  ", " ").strip()
+    text = text.replace(" ", " ").strip()
     # 앞뒤에 남은 > < / | 등 제거
     while text and text[0] in ">/<|- ":
         text = text[1:].strip()
     while text and text[-1] in ">/<|- ":
         text = text[:-1].strip()
     return text
-
 
 def clean_path_title(title):
     """경로형 제목 정리: 'A > B > C' → 마지막 유의미한 부분 추출"""
@@ -65,86 +51,57 @@ def clean_path_title(title):
         skip_words = ["구인정보", "채용정보", "채용", "구인", ""]
         meaningful = [p for p in parts if p and p not in skip_words]
         if meaningful:
-            # 가장 구체적인 정보(보통 첫 번째)를 선택
             return meaningful[0]
     return title
 
-
-def build_headline(job):
-    """본문 최상단에 표시할 '진짜 제목' 생성
-    
-    PC 리스트에서 한글이 깨져 보이는 문제를 우회하기 위해,
-    실제 정보는 본문 최상단에 크게 표시함.
-    """
-    category = job.get("category", "기타")
-    company = job.get("company", "비공개")
-    position = job.get("position", "")
-    raw_title = job.get("raw_title", "")
-
-    # 금칙어 제거
-    company = clean_forbidden_words(company)
-    position = clean_forbidden_words(position)
-    raw_title = clean_forbidden_words(raw_title)
-
-    # 회사명이 있으면 우선 사용
-    if company and company != "비공개":
-        headline = "[" + category + "] " + company
-        if position and position != "상세내용 참조":
-            clean_pos = clean_path_title(position)
-            if clean_pos and clean_pos != company:
-                headline += " - " + clean_pos
-    else:
-        clean_title = clean_path_title(raw_title) if raw_title else ""
-        if not clean_title:
-            clean_title = clean_path_title(position) if position else "채용공고"
-        headline = "[" + category + "] " + clean_title
-
-    return headline
-
-
 def build_subject(job):
-    """제목 생성 - PC 리스트에서 깨져도 알아볼 수 있는 최소 형태
-    
-    한글이 HTML 엔티티(&#숫자;)로 노출되어도 카테고리는 알아볼 수 있도록
-    분류만 한글로 넣고, 나머지는 영문/기호로 처리.
-    상세 정보는 본문 최상단 headline에서 확인.
     """
+    공식 제목 생성: [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무]
+    """
+    # 1. 고용형태 (신입 / 경력 / 신입경력)
+    experience = job.get("experience_type", job.get("type", "신입경력"))
+    if "신입" in experience and "경력" in experience:
+        exp_tag = "신입경력"
+    elif "신입" in experience:
+        exp_tag = "신입"
+    elif "경력" in experience:
+        exp_tag = "경력"
+    else:
+        exp_tag = "신입경력"
+
+    # 2. 업종 카테고리 (건설 / 제조 / 공공 / 기타)
     category = job.get("category", "기타")
+    allowed_categories = ["건설", "제조", "공공"]
+    cat_tag = category if category in allowed_categories else "기타"
 
-    # 카테고리별 영문 태그 매핑 (PC 리스트에서 깨져도 알아볼 수 있게)
-    category_tag_map = {
-        "건설": "CONSTRUCTION",
-        "제조": "MANUFACTURING",
-        "화학": "CHEMICAL",
-        "기타": "ETC",
-    }
-    eng_tag = category_tag_map.get(category, "JOB")
+    # 3. 회사명
+    company = clean_forbidden_words(job.get("company", ""))
+    if not company or company == "비공개":
+        company = "회사명미상"
 
-    # 형식: [CONSTRUCTION|건설] NEW JOB POST
-    # → 한글 부분이 깨져도 영문으로 카테고리 파악 가능
-    subject = "[" + eng_tag + "] NEW JOB - " + category
+    # 4. 담당업무 (duty, position, raw_title 순으로 파싱)
+    duty = clean_forbidden_words(job.get("duty", ""))
+    if not duty or duty == "상세내용 참조":
+        position = clean_forbidden_words(job.get("position", ""))
+        duty = clean_path_title(position) if position else ""
+
+    if not duty or duty == "상세내용 참조":
+        raw_title = clean_forbidden_words(job.get("raw_title", ""))
+        duty = clean_path_title(raw_title) if raw_title else "채용공고"
+
+    # 조합: [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무]
+    subject = f"[{exp_tag}] [{cat_tag}] [{company}] [{duty}]"
+
+    # 길이 제한 (네이버 카페 제목 글자수 안전 영역)
+    if len(subject) > 80:
+        subject = subject[:77] + "..."
 
     return subject
 
-
 def build_content(job):
-    """본문 생성 - 최상단에 '진짜 제목' 크게 표시"""
+    """본문 생성 - 출처 노출 없이"""
     lines = []
-
-    # ========================================
-    # 🎯 본문 최상단: 진짜 제목 역할 (강조 박스)
-    # ========================================
-    headline = build_headline(job)
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📢 " + headline)
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("")
-    lines.append("")
-
-    # ========================================
-    # 상세 정보
-    # ========================================
-    lines.append("📌 채용 상세 정보")
+    lines.append("📌 채용 정보")
     lines.append("")
 
     # 회사명
@@ -180,7 +137,7 @@ def build_content(job):
     lines.append("─────────────────────────")
     lines.append("")
 
-    # 지원 링크
+    # 지원 링크만 표시 (외부 사이트 링크 - 사람인 등)
     apply_link = job.get("apply_link", "")
     if apply_link and "isafety" not in apply_link.lower():
         lines.append("🔗 지원/상세 링크")
@@ -193,29 +150,25 @@ def build_content(job):
 
     return "\n".join(lines)
 
-
 def post_to_cafe(job, access_token):
     subject = build_subject(job)
     content = build_content(job)
 
     print("  📝 제목:", subject)
-    print("  📢 본문 헤드라인:", build_headline(job))
 
-    encoded_subject = to_html_entity(subject)
-    encoded_content = to_html_entity(content)
-
-    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
+    url = f"https://openapi.naver.com/v1/cafe/{CAFE_ID}/menu/{MENU_ID}/articles"
     headers = {
-        "Authorization": "Bearer " + access_token,
+        "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     }
 
+    # HTML 엔티티 변환 없이 원본 한글 문자열을 그대로 전송합니다.
     res = requests.post(
         url,
         headers=headers,
         data={
-            "subject": encoded_subject,
-            "content": encoded_content,
+            "subject": subject,
+            "content": content,
             "openyn": "true",
         },
         timeout=15
