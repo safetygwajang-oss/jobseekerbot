@@ -1,210 +1,192 @@
+import os
 import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
-BASE_URL = "https://isafety.co.kr"
-LIST_URL = "https://isafety.co.kr/is/job"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
-
-CATEGORIES = ["건설", "제조", "공공", "서비스", "기타"]
-
-LABELS_COMPANY = ["기업명", "회사명", "기업 명", "회사 명"]
-LABELS_POSITION = ["모집분야", "모집 분야", "모집직종", "직종"]
-LABELS_DUTY = ["담당업무", "담당 업무", "주요업무", "업무내용"]
-LABELS_DEADLINE = ["마감일", "마감 일", "접수마감", "마감"]
+CAFE_ID = "31767633"
+MENU_ID = "10"
 
 
-def fetch_job_list(max_pages=2):
-    jobs = []
-    seen_ids = set()
+def get_access_token():
+    CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
+    CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
+    REFRESH_TOKEN = os.environ["NAVER_REFRESH_TOKEN"]
 
-    for page in range(1, max_pages + 1):
-        url = LIST_URL + "?page=" + str(page)
-        print("리스트 수집:", url)
-
-        try:
-            res = requests.get(url, headers=HEADERS, timeout=15)
-            res.encoding = "utf-8"
-        except Exception as e:
-            print("요청 실패:", e)
-            continue
-
-        soup = BeautifulSoup(res.text, "lxml")
-        links = soup.find_all("a", href=True)
-
-        for link in links:
-            href = link["href"]
-            job_id = extract_job_id(href)
-            if not job_id:
-                continue
-            if job_id in seen_ids:
-                continue
-            seen_ids.add(job_id)
-
-            detail_url = urljoin(BASE_URL, href)
-            jobs.append({
-                "job_id": job_id,
-                "detail_url": detail_url,
-                "title_preview": link.get_text(strip=True)[:100]
-            })
-
-    print("총", len(jobs), "개 링크 발견")
-    return jobs
+    res = requests.get(
+        "https://nid.naver.com/oauth2.0/token",
+        params={
+            "grant_type": "refresh_token",
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "refresh_token": REFRESH_TOKEN,
+        },
+        timeout=10
+    )
+    data = res.json()
+    if "access_token" not in data:
+        raise RuntimeError("토큰 재발급 실패: " + str(data))
+    return data["access_token"]
 
 
-def extract_job_id(href):
-    """href에서 숫자 ID 추출 (정규식 없이)"""
-    # wr_id= 패턴
-    if "wr_id=" in href:
-        part = href.split("wr_id=")[1]
-        num = ""
-        for ch in part:
-            if ch.isdigit():
-                num += ch
-            else:
-                break
-        if num:
-            return num
-    # /is/job/숫자 패턴
-    if "/is/job/" in href:
-        part = href.split("/is/job/")[1]
-        num = ""
-        for ch in part:
-            if ch.isdigit():
-                num += ch
-            else:
-                break
-        if num:
-            return num
-    return None
+def to_html_entity(text):
+    """비-ASCII 문자를 HTML 엔티티로 변환"""
+    result = ""
+    for ch in text:
+        if ord(ch) < 128:
+            result += ch
+        else:
+            result += "&#" + str(ord(ch)) + ";"
+    return result
 
 
-def fetch_job_detail(job):
-    url = job["detail_url"]
-    print("상세 수집:", url)
+def clean_forbidden_words(text):
+    """출처 노출 방지 - iSAFETY 관련 단어 제거"""
+    if not text:
+        return text
+    forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety", "아이세이프티", "아이세이프"]
+    for word in forbidden:
+        text = text.replace(word, "")
+    text = text.replace("  ", " ").strip()
+    while text and text[0] in ">/<|- ":
+        text = text[1:].strip()
+    while text and text[-1] in ">/<|- ":
+        text = text[:-1].strip()
+    return text
 
-    res = requests.get(url, headers=HEADERS, timeout=15)
-    res.encoding = "utf-8"
-    soup = BeautifulSoup(res.text, "lxml")
 
-    title_tag = soup.select_one("#bo_v_title, .view_title, h1, h2, title")
-    if title_tag:
-        full_title = title_tag.get_text(strip=True)
-    else:
-        full_title = job["title_preview"]
+def build_subject(job):
+    """
+    제목 포맷: [경력태그] 회사명 - 모집분야 (~마감일)
+    예: [경력] 코웨이엔텍 - 본사 안전보건 (~26-10-03)
+    """
+    career_tag = job.get("career_tag", "경력무관")
+    company = clean_forbidden_words(job.get("company", ""))
+    position = clean_forbidden_words(job.get("position", ""))
+    deadline = job.get("deadline", "")
 
-    content_area = soup.select_one("#bo_v_con, .view_content, .board-view, #bo_v_atc")
-    if content_area:
-        full_text = content_area.get_text("\n", strip=True)
-    else:
-        full_text = soup.get_text("\n", strip=True)
+    # [태그]
+    title = "[" + career_tag + "]"
 
-    # 카테고리 추출 (정규식 없이)
-    category = detect_category(full_title)
+    # 회사명
+    if company and company != "비공개":
+        title += " " + company
 
-    # 정보 추출 (라벨 기반)
-    info = extract_job_info(full_text)
+    # 모집분야
+    if position and position != "채용공고":
+        if company and company != "비공개":
+            title += " - " + position
+        else:
+            title += " " + position
 
-    # 제목 정리 (앞의 대괄호 태그 제거)
-    clean_title = remove_bracket_prefix(full_title)
+    # 마감일
+    if deadline:
+        if "채용시" in deadline or "상시" in deadline:
+            title += " (상시채용)"
+        else:
+            title += " (~" + deadline + ")"
 
-    return {
-        "job_id": job["job_id"],
-        "category": category,
-        "company": info.get("company", "비공개"),
-        "position": info.get("position", clean_title[:50]),
-        "duty": info.get("duty", "상세내용 참조"),
-        "deadline": info.get("deadline", "채용시 마감"),
-        "apply_link": info.get("link", ""),
-        "raw_title": clean_title[:80],
+    # 길이 제한
+    if len(title) > 80:
+        title = title[:77] + "..."
+    
+    return title
+
+
+def build_content(job):
+    """본문 - iSAFETY 흔적 없이"""
+    lines = []
+    lines.append("📌 채용 정보")
+    lines.append("")
+
+    company = clean_forbidden_words(job.get("company", ""))
+    if company and company != "비공개":
+        lines.append("🏢 회사·기관: " + company)
+
+    position = clean_forbidden_words(job.get("position", ""))
+    if position and position != "채용공고":
+        lines.append("👔 모집분야: " + position)
+
+    career_tag = job.get("career_tag", "")
+    if career_tag:
+        lines.append("💼 경력구분: " + career_tag)
+
+    location = job.get("location", "")
+    if location:
+        lines.append("📍 근무지: " + location)
+
+    deadline = job.get("deadline", "")
+    if deadline:
+        lines.append("📅 마감일: " + deadline)
+
+    category = job.get("category", "")
+    if category:
+        lines.append("🏷️ 분류: " + category)
+
+    # 담당업무 (있을 경우만)
+    duty = clean_forbidden_words(job.get("duty", ""))
+    if duty and duty != "상세내용 참조" and len(duty) > 10:
+        if len(duty) > 300:
+            duty = duty[:297] + "..."
+        lines.append("")
+        lines.append("📝 담당업무")
+        lines.append(duty)
+
+    lines.append("")
+    lines.append("─────────────────────────")
+    lines.append("")
+
+    # 외부 지원 링크 (iSAFETY 아닌 경우만)
+    apply_link = job.get("apply_link", "")
+    if apply_link and "isafety" not in apply_link.lower():
+        lines.append("🔗 지원/상세 링크")
+        lines.append(apply_link)
+        lines.append("")
+        lines.append("─────────────────────────")
+
+    lines.append("※ 지원 전 반드시 채용공고 원문을 확인해주세요.")
+    lines.append("※ 본 정보는 참고용이며, 채용 조건은 변경될 수 있습니다.")
+
+    return "\n".join(lines)
+
+
+def post_to_cafe(job, access_token):
+    subject = build_subject(job)
+    content = build_content(job)
+
+    print("  📝 제목:", subject)
+
+    encoded_subject = to_html_entity(subject)
+    encoded_content = to_html_entity(content)
+
+    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
+    headers = {
+        "Authorization": "Bearer " + access_token,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     }
 
+    res = requests.post(
+        url,
+        headers=headers,
+        data={
+            "subject": encoded_subject,
+            "content": encoded_content,
+            "openyn": "true",
+        },
+        timeout=15
+    )
 
-def detect_category(title):
-    """제목에서 카테고리 추출"""
-    for cat in CATEGORIES:
-        if cat in title:
-            if cat == "서비스":
-                return "기타"
-            return cat
-    return "기타"
+    print("  📨 상태코드:", res.status_code)
+    print("  📨 응답:", res.text[:300])
 
+    try:
+        result = res.json()
+    except Exception:
+        print("  ❌ JSON 파싱 실패")
+        return None
 
-def remove_bracket_prefix(title):
-    """제목 앞의 [xxx] 제거"""
-    t = title.strip()
-    while t.startswith("["):
-        idx = t.find("]")
-        if idx == -1:
-            break
-        t = t[idx + 1:].strip()
-    return t
+    status = result.get("message", {}).get("status")
+    if status != "200":
+        print("  ❌ 실패")
+        return None
 
-
-def find_value_by_labels(text, labels):
-    """라벨 뒤의 값 추출"""
-    lines = text.split("\n")
-    for line in lines:
-        for label in labels:
-            if label in line:
-                # 라벨 뒤의 : 또는 ： 이후 텍스트 추출
-                for sep in [":", "："]:
-                    if sep in line:
-                        parts = line.split(sep, 1)
-                        if len(parts) == 2:
-                            value = parts[1].strip()
-                            if value:
-                                return value[:200]
-    return None
-
-
-def find_http_link(text):
-    """본문에서 http 링크 추출"""
-    for word in text.split():
-        if word.startswith("http://") or word.startswith("https://"):
-            return word[:200]
-    return None
-
-
-def extract_job_info(text):
-    info = {}
-    v = find_value_by_labels(text, LABELS_COMPANY)
-    if v:
-        info["company"] = v
-    v = find_value_by_labels(text, LABELS_POSITION)
-    if v:
-        info["position"] = v
-    v = find_value_by_labels(text, LABELS_DUTY)
-    if v:
-        info["duty"] = v
-    v = find_value_by_labels(text, LABELS_DEADLINE)
-    if v:
-        info["deadline"] = v
-    v = find_http_link(text)
-    if v:
-        info["link"] = v
-    return info
-
-
-def get_all_jobs(max_pages=2):
-    job_list = fetch_job_list(max_pages)
-    detailed = []
-    for job in job_list:
-        try:
-            detail = fetch_job_detail(job)
-            detailed.append(detail)
-        except Exception as e:
-            print("파싱 실패:", e)
-            continue
-    return detailed
-
-
-if __name__ == "__main__":
-    jobs = get_all_jobs(max_pages=1)
-    print("총", len(jobs), "건")
-    for j in jobs[:3]:
-        print(j)
-        print("---")
+    article_url = result["message"]["result"]["articleUrl"]
+    print("  ✅ 성공:", article_url)
+    return article_url
