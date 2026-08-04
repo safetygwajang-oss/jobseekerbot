@@ -180,8 +180,7 @@ def post_to_cafe(job, access_token):
     encoded_subject = subject
     encoded_content = to_html_entity(content)
 
-    url = "https://openapi.openapi.naver.com/v1/cafe/" if "openapi.naver.com" in "https://openapi.naver.com/v1/cafe/" else "https://openapi.naver.com/v1/cafe/"
-    url = url + CAFE_ID + "/menu/" + MENU_ID + "/articles"
+    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
     
     headers = {
         "Authorization": "Bearer " + access_token,
