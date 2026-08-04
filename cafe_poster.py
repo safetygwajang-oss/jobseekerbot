@@ -1,6 +1,7 @@
 import os
 import re
 import requests
+from urllib.parse import quote
  
 CAFE_ID = "31767633"
 MENU_ID = "10"
@@ -210,10 +211,18 @@ def post_to_cafe(job, access_token):
  
     print("  📝 제목:", subject)
  
-    # ⭐ 변경점: 제목(subject)은 엔티티 인코딩 없이 UTF-8 그대로 전송
-    #    (requests가 form data 전송 시 UTF-8 기준으로 자동 percent-encoding 처리)
-    # 본문(content)은 기존처럼 엔티티 인코딩 유지 (정상 동작 중이므로 그대로)
+    # ⭐ 변경점: 제목(subject)은 CP949(EUC-KR)로 인코딩해서 전송
+    #    → 네이버 카페 글쓰기 API가 subject 필드를 EUC-KR로 해석하는 것으로 확인됨
+    #      (UTF-8 그대로 보내면 "寃쎈젰臾닿�" 식으로 깨짐)
+    # 본문(content)은 기존처럼 UTF-8 + HTML 엔티티 인코딩 유지 (정상 동작 중)
+    try:
+        subject_bytes = subject.encode("cp949", errors="replace")
+    except Exception:
+        subject_bytes = subject.encode("euc-kr", errors="replace")
+    subject_encoded = quote(subject_bytes, safe="")
+ 
     encoded_content = to_html_entity(content)
+    content_encoded = quote(encoded_content.encode("utf-8"), safe="")
  
     url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
     headers = {
@@ -221,14 +230,13 @@ def post_to_cafe(job, access_token):
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     }
  
+    # 필드마다 인코딩이 달라서 dict가 아니라 body 문자열을 직접 구성해서 전송
+    body = "subject=" + subject_encoded + "&content=" + content_encoded + "&openyn=true"
+ 
     res = requests.post(
         url,
         headers=headers,
-        data={
-            "subject": subject,
-            "content": encoded_content,
-            "openyn": "true",
-        },
+        data=body.encode("utf-8"),
         timeout=15
     )
  
