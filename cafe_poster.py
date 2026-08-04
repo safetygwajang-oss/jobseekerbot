@@ -27,7 +27,7 @@ def get_access_token():
 
 
 def to_html_entity(text):
-    """비-ASCII 문자를 HTML 엔티티로 변환"""
+    """비-ASCII 문자를 HTML 엔티티로 변환 (현재 미사용, 롤백용 보관)"""
     result = ""
     for ch in text:
         if ord(ch) < 128:
@@ -164,23 +164,25 @@ def post_to_cafe(job, access_token):
 
     print("  📝 제목:", subject)
 
-    encoded_subject = to_html_entity(subject)
-    encoded_content = to_html_entity(content)
-
+    # ✅ HTML 엔티티 변환 제거 - UTF-8 원본 그대로 전송
+    # (PC 카페 리스트 화면에서 &#51228; 같은 숫자 코드가 노출되는 문제 해결)
     url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
     headers = {
         "Authorization": "Bearer " + access_token,
-        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    }
+
+    # data 딕셔너리를 UTF-8로 명시적 인코딩하여 전송 (안전장치)
+    payload = {
+        "subject": subject.encode("utf-8"),
+        "content": content.encode("utf-8"),
+        "openyn": "true",
     }
 
     res = requests.post(
         url,
         headers=headers,
-        data={
-            "subject": encoded_subject,
-            "content": encoded_content,
-            "openyn": "true",
-        },
+        data=payload,
         timeout=15
     )
 
