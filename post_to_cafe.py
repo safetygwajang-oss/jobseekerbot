@@ -1,5 +1,6 @@
 import os
 import requests
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
@@ -30,26 +31,24 @@ def get_access_token():
 def post_article(access_token, subject, content):
     url = f"https://openapi.naver.com/v1/cafe/{CAFE_ID}/menu/{MENU_ID}/articles"
     
+    # ⭐ 핵심 해결책: 데이터를 CP949(옛날 한국어 표준)로 강제 변환!
+    # 이렇게 하면 네이버 뒷단 서버가 찰떡같이 알아듣습니다.
+    payload = urllib.parse.urlencode({
+        'subject': subject,
+        'content': content,
+        'openyn': 'true'
+    }, encoding='cp949')
+    
     headers = {
         "Authorization": f"Bearer {access_token}",
-        # ⚠️ 주의: Content-Type을 직접 적지 않습니다! 
-        # requests 라이브러리가 files 파라미터를 보면 자동으로 완벽한 multipart 헤더를 만들어줍니다.
+        # ⭐ 문지기(API 게이트웨이)를 통과하기 위해 겉포장만 utf-8로 위장
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
     }
-    
-    # ⭐ 30년차 비장의 무기: Multipart/form-data 강제 적용
-    # (None, 데이터) 형태로 넣으면 파일이 아닌 '일반 텍스트'로 인식하면서도 인코딩은 완벽하게 보호됩니다.
-    multipart_data = {
-        'subject': (None, subject),
-        'content': (None, content),
-        'openyn': (None, 'true')
-    }
-    
-    print(f"🔍 전송할 제목: {subject}")
     
     res = requests.post(
         url,
         headers=headers,
-        files=multipart_data,  # data= 대신 files= 를 사용!
+        data=payload,
         timeout=15
     )
     
@@ -67,7 +66,6 @@ def post_article(access_token, subject, content):
 if __name__ == "__main__":
     today = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     
-    # 이제 꼼수 없이 순수 한글을 마음껏 쓰셔도 됩니다!
     subject = f"[자동] {today} 안전 브리핑"
     content = f"""<p>안녕하세요, 안전과장입니다.</p>
 <p>일시: {today}</p>
