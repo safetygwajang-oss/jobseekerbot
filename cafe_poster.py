@@ -1,5 +1,11 @@
+"""
+제목 인코딩 진단용 테스트 스크립트
+- 같은 한글 텍스트를 4가지 다른 방식으로 인코딩해서 테스트 게시글 4개를 올립니다.
+- 실행 후 카페에서 어떤 제목이 정상적으로 한글로 보이는지 확인해서 알려주세요.
+- 확인 후에는 이 테스트 게시글 4개는 삭제하셔도 됩니다.
+"""
+ 
 import os
-import re
 import requests
 from urllib.parse import quote
  
@@ -29,7 +35,6 @@ def get_access_token():
  
  
 def to_html_entity(text):
-    """비-ASCII 문자를 HTML 엔티티로 변환 (본문 전용)"""
     result = ""
     for ch in text:
         if ord(ch) < 128:
@@ -39,221 +44,56 @@ def to_html_entity(text):
     return result
  
  
-def clean_forbidden_words(text):
-    """출처가 드러나는 단어 제거"""
-    if not text:
-        return text
-    forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety"]
-    for word in forbidden:
-        text = text.replace(word, "")
-    text = text.replace("  ", " ").strip()
-    while text and text[0] in ">/<|- ":
-        text = text[1:].strip()
-    while text and text[-1] in ">/<|- ":
-        text = text[:-1].strip()
-    return text
- 
- 
-def clean_path_title(title):
-    """경로형 제목 정리: 'A > B > C' → 마지막 유의미한 부분 추출"""
-    if not title:
-        return title
-    if ">" in title:
-        parts = [p.strip() for p in title.split(">")]
-        parts = [clean_forbidden_words(p) for p in parts]
-        skip_words = ["구인정보", "채용정보", "채용", "구인", ""]
-        meaningful = [p for p in parts if p and p not in skip_words]
-        if meaningful:
-            return meaningful[0]
-    return title
- 
- 
-# ── 제목 템플릿용 추가 함수 ────────────────────────────────
- 
-def detect_experience(text):
-    """텍스트에서 경력구분 추출: 신입 / 경력 / 신입경력"""
-    if not text:
-        return "경력무관"
-    has_new = "신입" in text
-    has_exp = any(k in text for k in ["경력", "년이상", "년 이상", "년차"])
-    # '경력무관' 이라는 표현 자체는 경력 요구가 아님
-    if "경력무관" in text or "무관" in text:
-        has_exp = False if not has_exp else has_exp
- 
-    if has_new and has_exp:
-        return "신입경력"
-    if has_new:
-        return "신입"
-    if has_exp:
-        return "경력"
-    return "경력무관"
- 
- 
-def normalize_category(category_raw, fallback_text=""):
-    """카테고리를 [건설/제조/공공/기타] 중 하나로 정규화"""
-    target = {"건설", "제조", "공공", "기타"}
-    if category_raw and category_raw.strip() in target:
-        return category_raw.strip()
- 
-    text = (category_raw or "") + " " + (fallback_text or "")
-    if any(k in text for k in ["건설", "토목", "건축", "시공", "현장"]):
-        return "건설"
-    if any(k in text for k in ["제조", "생산", "공장", "화학", "플랜트"]):
-        return "제조"
-    if any(k in text for k in ["공공", "관공서", "지자체", "공기업", "공사", "공단"]):
-        return "공공"
-    return "기타"
- 
- 
-def extract_duty_part(job):
-    """담당업무/모집분야에서 제목에 넣을 핵심 텍스트 추출"""
-    position = clean_forbidden_words(job.get("position", ""))
-    duty = clean_forbidden_words(job.get("duty", ""))
-    raw_title = clean_forbidden_words(job.get("raw_title", ""))
- 
-    if position and position != "상세내용 참조":
-        part = clean_path_title(position)
-        if part:
-            return part
-    if duty and duty != "상세내용 참조":
-        part = clean_path_title(duty)
-        if part:
-            return part[:40] + "..." if len(part) > 40 else part
-    if raw_title:
-        part = clean_path_title(raw_title)
-        if part:
-            return part
-    return ""
- 
- 
-# ── 제목/본문 생성 ────────────────────────────────
- 
-def build_subject(job):
-    """
-    제목 템플릿: [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무]
-    엔티티 인코딩은 하지 않음 (제목 깨짐 방지 → post_to_cafe에서 UTF-8 그대로 전송)
-    """
-    company = clean_forbidden_words(job.get("company", "")) or "비공개"
-    position = clean_forbidden_words(job.get("position", ""))
-    duty = clean_forbidden_words(job.get("duty", ""))
-    raw_title = clean_forbidden_words(job.get("raw_title", ""))
-    category_raw = job.get("category", "")
- 
-    combined_text = " ".join([position or "", duty or "", raw_title or "", category_raw or ""])
- 
-    exp = detect_experience(combined_text)
-    category = normalize_category(category_raw, combined_text)
-    duty_part = extract_duty_part(job)
- 
-    parts = ["[" + exp + "]", "[" + category + "]"]
-    parts.append("[" + company + "]")
-    if duty_part:
-        parts.append("[" + duty_part + "]")
- 
-    title = " ".join(parts)
- 
-    # 길이 제한 (엔티티 변환 전이므로 단순 문자수 기준으로 안전하게 자름)
-    if len(title) > 80:
-        title = title[:77] + "..."
-    return title
- 
- 
-def build_content(job):
-    """본문 생성 - 출처 노출 없이"""
-    lines = []
-    lines.append("📌 채용 정보")
-    lines.append("")
- 
-    company = clean_forbidden_words(job.get("company", ""))
-    if company and company != "비공개":
-        lines.append("🏢 회사명: " + company)
- 
-    position = clean_forbidden_words(job.get("position", ""))
-    if position and position != "상세내용 참조":
-        position = clean_path_title(position)
-        if position:
-            lines.append("👔 모집분야: " + position)
- 
-    duty = clean_forbidden_words(job.get("duty", ""))
-    if duty and duty != "상세내용 참조":
-        if len(duty) > 300:
-            duty = duty[:297] + "..."
-        lines.append("📝 담당업무: " + duty)
- 
-    deadline = job.get("deadline", "")
-    if deadline:
-        lines.append("📅 마감일: " + deadline)
- 
-    category = job.get("category", "")
-    if category:
-        lines.append("🏷️ 분류: " + category)
- 
-    lines.append("")
-    lines.append("─────────────────────────")
-    lines.append("")
- 
-    apply_link = job.get("apply_link", "")
-    if apply_link and "isafety" not in apply_link.lower():
-        lines.append("🔗 지원/상세 링크")
-        lines.append(apply_link)
-        lines.append("")
- 
-    lines.append("─────────────────────────")
-    lines.append("※ 지원 전 반드시 채용공고 원문을 확인해주세요.")
-    lines.append("※ 본 정보는 참고용이며, 채용 조건은 변경될 수 있습니다.")
- 
-    return "\n".join(lines)
- 
- 
-def post_to_cafe(job, access_token):
-    subject = build_subject(job)
-    content = build_content(job)
- 
-    print("  📝 제목:", subject)
- 
-    # ⭐ 변경점: 제목(subject)은 CP949(EUC-KR)로 인코딩해서 전송
-    #    → 네이버 카페 글쓰기 API가 subject 필드를 EUC-KR로 해석하는 것으로 확인됨
-    #      (UTF-8 그대로 보내면 "寃쎈젰臾닿�" 식으로 깨짐)
-    # 본문(content)은 기존처럼 UTF-8 + HTML 엔티티 인코딩 유지 (정상 동작 중)
-    try:
-        subject_bytes = subject.encode("cp949", errors="replace")
-    except Exception:
-        subject_bytes = subject.encode("euc-kr", errors="replace")
-    subject_encoded = quote(subject_bytes, safe="")
- 
-    encoded_content = to_html_entity(content)
-    content_encoded = quote(encoded_content.encode("utf-8"), safe="")
+def post_test(access_token, label, subject_encoded_str, body_note):
+    """subject_encoded_str: 이미 percent-encoding까지 끝난 ASCII 문자열"""
+    content_text = "[인코딩 테스트] " + label + "\n\n" + body_note + "\n\n확인 후 삭제해주세요."
+    content_encoded = quote(to_html_entity(content_text).encode("utf-8"), safe="")
  
     url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
     headers = {
         "Authorization": "Bearer " + access_token,
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     }
+    body = "subject=" + subject_encoded_str + "&content=" + content_encoded + "&openyn=false"
  
-    # 필드마다 인코딩이 달라서 dict가 아니라 body 문자열을 직접 구성해서 전송
-    body = "subject=" + subject_encoded + "&content=" + content_encoded + "&openyn=true"
- 
-    res = requests.post(
-        url,
-        headers=headers,
-        data=body.encode("utf-8"),
-        timeout=15
-    )
- 
-    print("  📨 상태코드:", res.status_code)
-    print("  📨 응답:", res.text[:300])
- 
+    res = requests.post(url, headers=headers, data=body.encode("utf-8"), timeout=15)
+    print(f"  [{label}] 상태코드:", res.status_code)
     try:
         result = res.json()
+        status = result.get("message", {}).get("status")
+        if status == "200":
+            print(f"  [{label}] ✅ 성공:", result["message"]["result"]["articleUrl"])
+        else:
+            print(f"  [{label}] ❌ 실패:", res.text[:200])
     except Exception:
-        print("  ❌ JSON 파싱 실패")
-        return None
+        print(f"  [{label}] ❌ 응답 파싱 실패:", res.text[:200])
  
-    status = result.get("message", {}).get("status")
-    if status != "200":
-        print("  ❌ 실패")
-        return None
  
-    article_url = result["message"]["result"]["articleUrl"]
-    print("  ✅ 성공:", article_url)
-    return article_url
+def main():
+    token = get_access_token()
+    print("✅ Access Token 발급")
+ 
+    test_text = "테스트제목 한글확인 니프코코리아 안전보건관리"
+ 
+    # A) UTF-8 그대로 percent-encoding
+    subject_a = quote(test_text.encode("utf-8"), safe="")
+    post_test(token, "A_UTF8", subject_a, "subject를 UTF-8 bytes로 percent-encoding")
+ 
+    # B) CP949(EUC-KR 확장)로 인코딩 후 percent-encoding
+    subject_b = quote(test_text.encode("cp949", errors="replace"), safe="")
+    post_test(token, "B_CP949", subject_b, "subject를 CP949 bytes로 percent-encoding")
+ 
+    # C) 본문과 동일하게 HTML 숫자 엔티티로 변환 후 UTF-8 percent-encoding
+    subject_c = quote(to_html_entity(test_text).encode("utf-8"), safe="")
+    post_test(token, "C_HTML엔티티", subject_c, "subject를 본문과 동일하게 HTML 엔티티 변환")
+ 
+    # D) UTF-8 percent-encoding을 한번 더 percent-encoding (이중 인코딩)
+    once = quote(test_text.encode("utf-8"), safe="")
+    subject_d = quote(once, safe="")
+    post_test(token, "D_이중인코딩", subject_d, "subject를 UTF-8 percent-encoding 후 한번 더 percent-encoding")
+ 
+    print("\n📌 카페에서 A/B/C/D 중 어떤 제목이 정상적으로 한글로 보이는지 확인해주세요.")
+ 
+ 
+if __name__ == "__main__":
+    main()
