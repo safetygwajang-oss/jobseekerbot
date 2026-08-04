@@ -3,7 +3,6 @@ import requests
 
 CAFE_ID = "31767633"
 MENU_ID = "10"
-DETAIL_BASE_URL = "https://isafety.co.kr/is/job/"
 
 
 def get_access_token():
@@ -28,7 +27,7 @@ def get_access_token():
 
 
 def to_html_entity(text):
-    """비-ASCII 문자를 HTML 엔티티로 변환 (네이버 API 한글 처리용)"""
+    """비-ASCII 문자를 HTML 엔티티로 변환"""
     result = ""
     for ch in text:
         if ord(ch) < 128:
@@ -38,57 +37,102 @@ def to_html_entity(text):
     return result
 
 
+def clean_forbidden_words(text):
+    """출처가 드러나는 단어 제거"""
+    if not text:
+        return text
+    # 금칙어 리스트 (대소문자 구분 없이)
+    forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety"]
+    for word in forbidden:
+        text = text.replace(word, "")
+    # 정리: 연속 공백, 앞뒤 특수문자 제거
+    text = text.replace("  ", " ").strip()
+    # 앞뒤에 남은 > < / | 등 제거
+    while text and text[0] in ">/<|- ":
+        text = text[1:].strip()
+    while text and text[-1] in ">/<|- ":
+        text = text[:-1].strip()
+    return text
+
+
+def clean_path_title(title):
+    """경로형 제목 정리: 'A > B > C' → 마지막 유의미한 부분 추출"""
+    if ">" in title:
+        parts = [p.strip() for p in title.split(">")]
+        # 각 부분에서 금칙어 제거
+        parts = [clean_forbidden_words(p) for p in parts]
+        # 빈 값과 일반 카테고리 단어 제거
+        skip_words = ["구인정보", "채용정보", "채용", "구인", ""]
+        meaningful = [p for p in parts if p and p not in skip_words]
+        if meaningful:
+            # 가장 구체적인 정보(보통 첫 번째)를 선택
+            return meaningful[0]
+    return title
+
+
 def build_subject(job):
-    """제목 생성: [카테고리] 회사명 - 모집분야"""
+    """제목 생성 - iSAFETY 노출 방지"""
     category = job.get("category", "기타")
     company = job.get("company", "비공개")
     position = job.get("position", "")
+    raw_title = job.get("raw_title", "")
+
+    # 금칙어 제거
+    company = clean_forbidden_words(company)
+    position = clean_forbidden_words(position)
+    raw_title = clean_forbidden_words(raw_title)
 
     # 회사명이 있으면 우선 사용
     if company and company != "비공개":
         title = "[" + category + "] " + company
-        if position and position != job.get("raw_title", "")[:50]:
-            title += " - " + position
+        if position and position != "상세내용 참조":
+            # 모집분야도 경로형이면 정리
+            clean_pos = clean_path_title(position)
+            if clean_pos and clean_pos != company:
+                title += " - " + clean_pos
     else:
-        # 회사명 없으면 원본 제목 활용
-        title = "[" + category + "] " + job.get("raw_title", "채용공고")
+        # 회사명 없으면 raw_title 정리해서 사용
+        clean_title = clean_path_title(raw_title) if raw_title else ""
+        if not clean_title:
+            clean_title = clean_path_title(position) if position else "채용공고"
+        title = "[" + category + "] " + clean_title
 
-    # 네이버 카페 제목 길이 제한 (약 80자)
+    # 길이 제한
     if len(title) > 80:
         title = title[:77] + "..."
     return title
 
 
 def build_content(job):
-    """본문 생성: 값이 있는 정보만 표시 (모르는 건 안 씀)"""
+    """본문 생성 - 출처 노출 없이"""
     lines = []
     lines.append("📌 채용 정보")
     lines.append("")
 
-    # 회사명 (비공개면 스킵)
-    company = job.get("company", "")
+    # 회사명
+    company = clean_forbidden_words(job.get("company", ""))
     if company and company != "비공개":
         lines.append("🏢 회사명: " + company)
 
     # 모집분야
-    position = job.get("position", "")
+    position = clean_forbidden_words(job.get("position", ""))
     if position and position != "상세내용 참조":
-        lines.append("👔 모집분야: " + position)
+        # 경로형이면 정리
+        position = clean_path_title(position)
+        if position:
+            lines.append("👔 모집분야: " + position)
 
     # 담당업무
-    duty = job.get("duty", "")
+    duty = clean_forbidden_words(job.get("duty", ""))
     if duty and duty != "상세내용 참조":
-        # 담당업무는 길 수 있으니 300자 제한
         if len(duty) > 300:
             duty = duty[:297] + "..."
         lines.append("📝 담당업무: " + duty)
 
     # 마감일
     deadline = job.get("deadline", "")
-    if deadline and deadline != "채용시 마감":
+    if deadline:
         lines.append("📅 마감일: " + deadline)
-    elif deadline == "채용시 마감":
-        lines.append("📅 마감일: 채용시 마감")
 
     # 카테고리
     category = job.get("category", "")
@@ -99,23 +143,17 @@ def build_content(job):
     lines.append("─────────────────────────")
     lines.append("")
 
-    # 지원 링크 (본문에서 찾은 외부 링크)
+    # 지원 링크만 표시 (외부 사이트 링크 - 사람인 등)
     apply_link = job.get("apply_link", "")
-    if apply_link:
+    # ⚠️ iSAFETY 링크는 절대 표시 안 함
+    if apply_link and "isafety" not in apply_link.lower():
         lines.append("🔗 지원/상세 링크")
         lines.append(apply_link)
         lines.append("")
 
-    # 원문 링크 (iSAFETY 상세 페이지)
-    job_id = job.get("job_id", "")
-    if job_id:
-        lines.append("📄 원문 보기 (iSAFETY)")
-        lines.append(DETAIL_BASE_URL + job_id)
-        lines.append("")
-
     lines.append("─────────────────────────")
-    lines.append("※ 본 공고는 iSAFETY에서 자동 수집된 정보입니다.")
-    lines.append("※ 지원 전 반드시 원문을 확인해주세요.")
+    lines.append("※ 지원 전 반드시 채용공고 원문을 확인해주세요.")
+    lines.append("※ 본 정보는 참고용이며, 채용 조건은 변경될 수 있습니다.")
 
     return "\n".join(lines)
 
@@ -123,6 +161,8 @@ def build_content(job):
 def post_to_cafe(job, access_token):
     subject = build_subject(job)
     content = build_content(job)
+
+    print("  📝 제목:", subject)
 
     encoded_subject = to_html_entity(subject)
     encoded_content = to_html_entity(content)
