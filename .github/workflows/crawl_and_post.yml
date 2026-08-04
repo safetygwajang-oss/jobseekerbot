@@ -1,0 +1,41 @@
+name: iSafety 채용정보 자동 크롤링 및 게시
+
+on:
+  schedule:
+    # 매일 오전 9시, 오후 3시 (KST) = UTC 00:00, 06:00
+    - cron: '0 0 * * *'
+    - cron: '0 6 * * *'
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  crawl_and_post:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # posted_jobs.json 커밋용
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run crawler & poster
+        env:
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          NAVER_REFRESH_TOKEN: ${{ secrets.NAVER_REFRESH_TOKEN }}
+        run: python main.py
+      
+      - name: Commit posted_jobs.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add posted_jobs.json
+          git diff --staged --quiet || git commit -m "🤖 게시 이력 업데이트 $(date +'%Y-%m-%d %H:%M')"
+          git push
