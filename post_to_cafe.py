@@ -1,6 +1,7 @@
 import os
 import requests
 from datetime import datetime
+from urllib.parse import urlencode
 
 # GitHub Secrets에서 자동으로 가져옴
 CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
@@ -28,19 +29,22 @@ def get_access_token():
     print(f"✅ Access Token 발급 완료")
     return data["access_token"]
 
-# 2. 카페 게시글 작성
+# 2. 카페 게시글 작성 (한글 UTF-8 처리)
 def post_article(access_token, subject, content):
+    # ⭐ UTF-8로 명시적 인코딩
+    body = urlencode({
+        "subject": subject,
+        "content": content,
+        "openyn": "true",
+    }, encoding="utf-8")
+    
     res = requests.post(
         f"https://openapi.naver.com/v1/cafe/{CAFE_ID}/menu/{MENU_ID}/articles",
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         },
-        data={
-            "subject": subject,
-            "content": content,
-            "openyn": "true",
-        },
+        data=body.encode("utf-8"),  # ⭐ 바이트로 전송
         timeout=15
     )
     result = res.json()
