@@ -10,111 +10,158 @@ HEADERS = {
 }
 
 
-def debug_detail_page():
-    """상세 페이지 1건 진단"""
-    print("=" * 60)
-    print("🔍 리스트 페이지 접근")
-    print("=" * 60)
+def parse_first_cell(text):
+    """
+    '안전(CM) 건설 · 26-08-01 · 139' 형태를 분해
+    반환: (모집분야, 분류, 등록일, 조회수)
+    """
+    parts = [p.strip() for p in text.split("·")]
     
-    res = requests.get(LIST_URL, headers=HEADERS, timeout=15)
+    if len(parts) >= 3:
+        # 앞부분: "안전(CM) 건설" → 모집분야 + 분류(마지막 단어)
+        first = parts[0]
+        tokens = first.rsplit(" ", 1)
+        if len(tokens) == 2:
+            position, category = tokens[0].strip(), tokens[1].strip()
+        else:
+            position, category = first, ""
+        reg_date = parts[1]
+        views = parts[2]
+        return position, category, reg_date, views
+    elif len(parts) == 2:
+        return parts[0], "", parts[1], ""
+    else:
+        return text.strip(), "", "", ""
+
+
+def extract_job_id(href):
+    """URL에서 게시글 ID 추출"""
+    if "wr_id=" in href:
+        part = href.split("wr_id=")[1]
+        num = ""
+        for ch in part:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        if num:
+            return num
+    # /is/job/숫자 패턴
+    if "/is/job/" in href:
+        part = href.split("/is/job/")[1]
+        # p1 같은 페이지 URL 제외
+        if part.startswith("p"):
+            return None
+        num = ""
+        for ch in part:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        if num:
+            return num
+    return None
+
+
+def get_jobs_from_page(page=1):
+    """리스트 페이지에서 채용공고 파싱"""
+    url = f"{LIST_URL}/p{page}" if page > 1 else LIST_URL
+    print(f"📄 페이지 접근: {url}")
+    
+    res = requests.get(url, headers=HEADERS, timeout=15)
     res.encoding = "utf-8"
     soup = BeautifulSoup(res.text, "lxml")
     
-    detail_url = None
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "/is/job/" in href and any(c.isdigit() for c in href.split("/is/job/")[-1][:8]):
-            detail_url = urljoin(BASE_URL, href)
+    # 모든 테이블 중 채용공고 리스트 찾기 (헤더로 판별)
+    target_table = None
+    for t in soup.find_all("table"):
+        headers = [th.get_text(strip=True) for th in t.find_all("th")]
+        if "모집분야" in headers and "마감일" in headers:
+            target_table = t
             break
     
-    if not detail_url:
-        print("❌ 상세 링크 못 찾음")
-        return
+    if not target_table:
+        print("  ❌ 채용공고 테이블 못 찾음")
+        return []
     
-    print("상세 URL:", detail_url)
+    jobs = []
+    rows = target_table.find_all("tr")
     
-    print("\n" + "=" * 60)
-    print("🔍 상세 페이지 진단")
-    print("=" * 60)
+    for row in rows:
+        tds = row.find_all("td")
+        if len(tds) < 5:
+            continue  # 헤더 행 등 스킵
+        
+        # 첫 번째 셀에 링크가 있음
+        first_cell = tds[0]
+        link = first_cell.find("a", href=True)
+        if not link:
+            continue
+        
+        href = link["href"]
+        job_id = extract_job_id(href)
+        if not job_id:
+            continue
+        
+        detail_url = urljoin(BASE_URL, href)
+        
+        # 5개 셀 텍스트 추출
+        first_text = tds[0].get_text(" ", strip=True)
+        company = tds[1].get_text(" ", strip=True)
+        career = tds[2].get_text(" ", strip=True).rstrip(".")  # '경력.' → '경력'
+        location = tds[3].get_text(" ", strip=True)
+        deadline = tds[4].get_text(" ", strip=True)
+        
+        # 첫 셀 분해
+        position, category, reg_date, views = parse_first_cell(first_text)
+        
+        # raw_title 만들기 (main.py에서 사용됨)
+        raw_title = f"[{category}] {position}" if category else position
+        
+        jobs.append({
+            "job_id": job_id,
+            "detail_url": detail_url,
+            "raw_title": raw_title,
+            "position": position,      # 모집분야
+            "category": category,       # 분류 (건설/제조 등)
+            "company": company,         # 회사명
+            "career": career,           # 경력
+            "location": location,       # 근무지
+            "deadline": deadline,       # 마감일
+            "reg_date": reg_date,       # 등록일
+            "views": views,             # 조회수
+        })
     
-    res = requests.get(detail_url, headers=HEADERS, timeout=15)
-    res.encoding = "utf-8"
-    soup = BeautifulSoup(res.text, "lxml")
-    
-    # [A] 제목 후보
-    print("\n[A] 제목 후보:")
-    for sel in ["h1", "h2", "h3", ".title", ".view_title", "#bo_v_title"]:
-        tags = soup.select(sel)
-        for t in tags[:3]:
-            txt = t.get_text(" ", strip=True)[:100]
-            if txt:
-                print(f"  {sel}: {txt}")
-    
-    # [B] 테이블 확인
-    print("\n[B] 테이블(<table>) 확인:")
-    tables = soup.find_all("table")
-    print(f"  개수: {len(tables)}")
-    for i, t in enumerate(tables):
-        cells = t.find_all(["td", "th"])
-        texts = [c.get_text(" ", strip=True) for c in cells]
-        print(f"  table[{i}] 셀 {len(cells)}개:")
-        print(f"    {texts[:12]}")
-    
-    # [C] dl/dt/dd 구조
-    print("\n[C] <dl>/<dt>/<dd> 확인:")
-    dls = soup.find_all("dl")
-    print(f"  dl 개수: {len(dls)}")
-    for dl in dls[:3]:
-        dts = [d.get_text(strip=True) for d in dl.find_all("dt")]
-        dds = [d.get_text(strip=True) for d in dl.find_all("dd")]
-        print(f"    dt: {dts}")
-        print(f"    dd: {dds}")
-    
-    # [D] "경력", "근무지", "마감일" 텍스트 주변 탐색
-    print("\n[D] 주요 라벨 주변 요소:")
-    for label in ["경력", "근무지", "마감일"]:
-        found = soup.find_all(string=lambda s: s and s.strip() == label)
-        print(f"  '{label}' 정확 매칭: {len(found)}개")
-        for f in found[:2]:
-            parent = f.parent
-            p_info = f"<{parent.name}"
-            if parent.get("class"):
-                p_info += f" class='{' '.join(parent.get('class'))}'"
-            p_info += ">"
-            print(f"    부모: {p_info}")
-            next_sib = parent.find_next_sibling()
-            if next_sib:
-                print(f"    다음 형제: <{next_sib.name}> = '{next_sib.get_text(' ', strip=True)[:50]}'")
-    
-    # [E] 회사명 후보
-    print("\n[E] 회사명 후보:")
-    for cls_keyword in ["company", "corp", "biz", "info"]:
-        elems = soup.find_all(class_=lambda c: c and cls_keyword in " ".join(c).lower())
-        for e in elems[:3]:
-            txt = e.get_text(" ", strip=True)[:80]
-            if txt and len(txt) < 100:
-                print(f"  class~{cls_keyword}: {txt}")
-    
-    # [F] 본문 영역
-    print("\n[F] 본문 영역:")
-    for sel in ["#bo_v_con", ".view_content", ".board-view", "#bo_v_atc", ".content"]:
-        area = soup.select_one(sel)
-        if area:
-            txt = area.get_text(" ", strip=True)[:200]
-            print(f"  {sel}: {txt}")
-    
-    # [G] '마감일' 주변 HTML
-    print("\n[G] '마감일' 텍스트 주변 HTML (800자):")
-    target = soup.find(string=lambda s: s and s.strip() == "마감일")
-    if target:
-        container = target.parent
-        for _ in range(3):
-            if container.parent:
-                container = container.parent
-        print(str(container)[:800])
-    
-    print("\n" + "=" * 60)
+    print(f"  ✅ {len(jobs)}건 파싱")
+    return jobs
 
 
+def get_all_jobs(max_pages=2):
+    """여러 페이지에서 공고 수집"""
+    all_jobs = []
+    seen_ids = set()
+    
+    for page in range(1, max_pages + 1):
+        jobs = get_jobs_from_page(page)
+        for j in jobs:
+            if j["job_id"] not in seen_ids:
+                seen_ids.add(j["job_id"])
+                all_jobs.append(j)
+    
+    print(f"\n📊 총 수집: {len(all_jobs)}건")
+    return all_jobs
+
+
+# 테스트 실행용
 if __name__ == "__main__":
-    debug_detail_page()
+    jobs = get_all_jobs(max_pages=1)
+    print("\n" + "=" * 60)
+    print("샘플 3건:")
+    print("=" * 60)
+    for j in jobs[:3]:
+        print(f"\n📌 [{j['category']}] {j['position']}")
+        print(f"   회사: {j['company']}")
+        print(f"   경력: {j['career']}")
+        print(f"   근무지: {j['location']}")
+        print(f"   마감일: {j['deadline']}")
+        print(f"   상세: {j['detail_url']}")
