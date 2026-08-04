@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime, timezone, timedelta
 from crawler import get_all_jobs
 from cafe_poster import get_access_token, post_to_cafe
@@ -39,8 +40,9 @@ def main():
     print(f"✅ Access Token 발급")
 
     success = 0
-    for i, job in enumerate(new_jobs[:5], 1):  # 한 번에 최대 5개
-        print(f"\n[{i}/{min(len(new_jobs), 5)}] {job['raw_title']}")
+    total = min(len(new_jobs), 5)
+    for i, job in enumerate(new_jobs[:5], 1):
+        print(f"\n[{i}/{total}] {job['raw_title']}")
         try:
             url = post_to_cafe(job, token)
             if url:
@@ -48,6 +50,11 @@ def main():
                 success += 1
         except Exception as e:
             print(f"  ❌ 오류: {e}")
+        
+        # 마지막 게시글이 아니면 60초 대기 (네이버 스팸 방지)
+        if i < total:
+            print(f"  ⏳ 60초 대기 중... (스팸 방지)")
+            time.sleep(60)
 
     state["posted_ids"] = list(posted_ids)
     state["last_run"] = datetime.now(KST).isoformat()
