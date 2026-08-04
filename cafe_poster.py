@@ -1,6 +1,5 @@
 import os
 import requests
-from urllib.parse import quote
 
 CAFE_ID = "31767633"
 MENU_ID = "10"
@@ -28,7 +27,7 @@ def get_access_token():
 
 
 def to_html_entity(text):
-    """비-ASCII 문자를 HTML 엔티티로 변환 (롤백용 보관)"""
+    """비-ASCII 문자를 HTML 엔티티로 변환"""
     result = ""
     for ch in text:
         if ord(ch) < 128:
@@ -36,16 +35,6 @@ def to_html_entity(text):
         else:
             result += "&#" + str(ord(ch)) + ";"
     return result
-
-
-def encode_ms949(text):
-    """네이버 카페 API용 인코딩: MS949로 URL 인코딩
-    
-    네이버 카페 API 서버는 MS949(EUC-KR 확장) 환경이므로,
-    한글을 MS949로 URL 인코딩해서 보내야 정상적으로 처리됨.
-    (네이버 공식 문서 방식)
-    """
-    return quote(text, encoding="ms949")
 
 
 def clean_forbidden_words(text):
@@ -81,27 +70,12 @@ def clean_path_title(title):
     return title
 
 
-def sanitize_for_ms949(text):
-    """MS949로 인코딩 불가능한 문자(이모지 등)를 안전하게 제거/치환
+def build_headline(job):
+    """본문 최상단에 표시할 '진짜 제목' 생성
     
-    네이버 카페 API는 MS949를 사용하므로, MS949에 없는 문자는
-    인코딩 에러를 일으키거나 깨진 문자로 저장될 수 있음.
+    PC 리스트에서 한글이 깨져 보이는 문제를 우회하기 위해,
+    실제 정보는 본문 최상단에 크게 표시함.
     """
-    if not text:
-        return text
-    result = []
-    for ch in text:
-        try:
-            ch.encode("ms949")
-            result.append(ch)
-        except UnicodeEncodeError:
-            # MS949에 없는 문자(이모지 등)는 제거
-            pass
-    return "".join(result)
-
-
-def build_subject(job):
-    """제목 생성 - iSAFETY 노출 방지"""
     category = job.get("category", "기타")
     company = job.get("company", "비공개")
     position = job.get("position", "")
@@ -114,73 +88,102 @@ def build_subject(job):
 
     # 회사명이 있으면 우선 사용
     if company and company != "비공개":
-        title = "[" + category + "] " + company
+        headline = "[" + category + "] " + company
         if position and position != "상세내용 참조":
-            # 모집분야도 경로형이면 정리
             clean_pos = clean_path_title(position)
             if clean_pos and clean_pos != company:
-                title += " - " + clean_pos
+                headline += " - " + clean_pos
     else:
-        # 회사명 없으면 raw_title 정리해서 사용
         clean_title = clean_path_title(raw_title) if raw_title else ""
         if not clean_title:
             clean_title = clean_path_title(position) if position else "채용공고"
-        title = "[" + category + "] " + clean_title
+        headline = "[" + category + "] " + clean_title
 
-    # MS949 호환 문자만 남김 (이모지 제거)
-    title = sanitize_for_ms949(title)
+    return headline
 
-    # 길이 제한
-    if len(title) > 80:
-        title = title[:77] + "..."
-    return title
+
+def build_subject(job):
+    """제목 생성 - PC 리스트에서 깨져도 알아볼 수 있는 최소 형태
+    
+    한글이 HTML 엔티티(&#숫자;)로 노출되어도 카테고리는 알아볼 수 있도록
+    분류만 한글로 넣고, 나머지는 영문/기호로 처리.
+    상세 정보는 본문 최상단 headline에서 확인.
+    """
+    category = job.get("category", "기타")
+
+    # 카테고리별 영문 태그 매핑 (PC 리스트에서 깨져도 알아볼 수 있게)
+    category_tag_map = {
+        "건설": "CONSTRUCTION",
+        "제조": "MANUFACTURING",
+        "화학": "CHEMICAL",
+        "기타": "ETC",
+    }
+    eng_tag = category_tag_map.get(category, "JOB")
+
+    # 형식: [CONSTRUCTION|건설] NEW JOB POST
+    # → 한글 부분이 깨져도 영문으로 카테고리 파악 가능
+    subject = "[" + eng_tag + "] NEW JOB - " + category
+
+    return subject
 
 
 def build_content(job):
-    """본문 생성 - 출처 노출 없이 (이모지 → 텍스트 기호로 대체)"""
+    """본문 생성 - 최상단에 '진짜 제목' 크게 표시"""
     lines = []
-    lines.append("[ 채용 정보 ]")
+
+    # ========================================
+    # 🎯 본문 최상단: 진짜 제목 역할 (강조 박스)
+    # ========================================
+    headline = build_headline(job)
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📢 " + headline)
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    lines.append("")
+
+    # ========================================
+    # 상세 정보
+    # ========================================
+    lines.append("📌 채용 상세 정보")
     lines.append("")
 
     # 회사명
     company = clean_forbidden_words(job.get("company", ""))
     if company and company != "비공개":
-        lines.append("■ 회사명: " + company)
+        lines.append("🏢 회사명: " + company)
 
     # 모집분야
     position = clean_forbidden_words(job.get("position", ""))
     if position and position != "상세내용 참조":
-        # 경로형이면 정리
         position = clean_path_title(position)
         if position:
-            lines.append("■ 모집분야: " + position)
+            lines.append("👔 모집분야: " + position)
 
     # 담당업무
     duty = clean_forbidden_words(job.get("duty", ""))
     if duty and duty != "상세내용 참조":
         if len(duty) > 300:
             duty = duty[:297] + "..."
-        lines.append("■ 담당업무: " + duty)
+        lines.append("📝 담당업무: " + duty)
 
     # 마감일
     deadline = job.get("deadline", "")
     if deadline:
-        lines.append("■ 마감일: " + deadline)
+        lines.append("📅 마감일: " + deadline)
 
     # 카테고리
     category = job.get("category", "")
     if category:
-        lines.append("■ 분류: " + category)
+        lines.append("🏷️ 분류: " + category)
 
     lines.append("")
     lines.append("─────────────────────────")
     lines.append("")
 
-    # 지원 링크만 표시 (외부 사이트 링크 - 사람인 등)
+    # 지원 링크
     apply_link = job.get("apply_link", "")
-    # ⚠ iSAFETY 링크는 절대 표시 안 함
     if apply_link and "isafety" not in apply_link.lower():
-        lines.append("▶ 지원/상세 링크")
+        lines.append("🔗 지원/상세 링크")
         lines.append(apply_link)
         lines.append("")
 
@@ -188,10 +191,7 @@ def build_content(job):
     lines.append("※ 지원 전 반드시 채용공고 원문을 확인해주세요.")
     lines.append("※ 본 정보는 참고용이며, 채용 조건은 변경될 수 있습니다.")
 
-    content = "\n".join(lines)
-    # MS949 호환 문자만 남김
-    content = sanitize_for_ms949(content)
-    return content
+    return "\n".join(lines)
 
 
 def post_to_cafe(job, access_token):
@@ -199,25 +199,25 @@ def post_to_cafe(job, access_token):
     content = build_content(job)
 
     print("  📝 제목:", subject)
+    print("  📢 본문 헤드라인:", build_headline(job))
 
-    # ✅ 네이버 카페 API 공식 방식: MS949로 URL 인코딩
-    # (네이버 공식 문서: "카페 오픈 API 서버는 ms949 환경")
-    encoded_subject = encode_ms949(subject)
-    encoded_content = encode_ms949(content)
+    encoded_subject = to_html_entity(subject)
+    encoded_content = to_html_entity(content)
 
     url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
     headers = {
         "Authorization": "Bearer " + access_token,
-        "Content-Type": "application/x-www-form-urlencoded; charset=ms949",
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     }
-
-    # 이미 URL 인코딩된 문자열을 body에 직접 실어 보냄
-    body = "subject=" + encoded_subject + "&content=" + encoded_content + "&openyn=true"
 
     res = requests.post(
         url,
         headers=headers,
-        data=body.encode("ascii"),  # 이미 URL 인코딩된 상태이므로 순수 ASCII
+        data={
+            "subject": encoded_subject,
+            "content": encoded_content,
+            "openyn": "true",
+        },
         timeout=15
     )
 
