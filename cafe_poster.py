@@ -35,12 +35,13 @@ def to_html_entity(text):
 
 def post_to_cafe(job, access_token):
     CAFE_ID = "31767633"
-    MENU_ID = "10"   # ← 이 값이 의심됨!
+    MENU_ID = "10"
 
-    # 아주 단순한 제목/본문으로 테스트
+    # 테스트용 제목/본문
     subject = "테스트 게시글 " + job["job_id"]
     content = "안녕하세요. 테스트 본문입니다. 채용공고 ID: " + job["job_id"]
     
+    encoded_subject = to_html_entity(subject)   # ⭐ 추가
     encoded_content = to_html_entity(content)
 
     url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
@@ -53,7 +54,7 @@ def post_to_cafe(job, access_token):
         url,
         headers=headers,
         data={
-            "subject": subject,
+            "subject": encoded_subject,          # ⭐ 변경
             "content": encoded_content,
             "openyn": "true",
         },
