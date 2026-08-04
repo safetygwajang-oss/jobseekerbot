@@ -19,31 +19,57 @@ return data["access_token"]
 def to_html_entity(text): """비-ASCII 문자를 HTML 엔티티로 변환""" result = "" for ch in text: if ord(ch) < 128: result += ch else: result += "&#" + str(ord(ch)) + ";" return result
 def clean_forbidden_words(text): """출처가 드러나는 단어 제거""" if not text: return text # 금칙어 리스트 (대소문자 구분 없이) forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety"] for word in forbidden: text = text.replace(word, "") # 정리: 연속 공백, 앞뒤 특수문자 제거 text = text.replace(" ", " ").strip() # 앞뒤에 남은 > < / | 등 제거 while text and text[0] in ">/<|- ": text = text[1:].strip() while text and text[-1] in ">/<|- ": text = text[:-1].strip() return text
 def clean_path_title(title): """경로형 제목 정리: 'A > B > C' → 마지막 유의미한 부분 추출""" if ">" in title: parts = [p.strip() for p in title.split(">")] # 각 부분에서 금칙어 제거 parts = [clean_forbidden_words(p) for p in parts] # 빈 값과 일반 카테고리 단어 제거 skip_words = ["구인정보", "채용정보", "채용", "구인", ""] meaningful = [p for p in parts if p and p not in skip_words] if meaningful: # 가장 구체적인 정보(보통 첫 번째)를 선택 return meaningful[0] return title
-def build_subject(job): """제목 생성 - iSAFETY 노출 방지""" category = job.get("category", "기타") company = job.get("company", "비공개") position = job.get("position", "") raw_title = job.get("raw_title", "")
-# 금칙어 제거
-company = clean_forbidden_words(company)
-position = clean_forbidden_words(position)
-raw_title = clean_forbidden_words(raw_title)
 
-# 회사명이 있으면 우선 사용
-if company and company != "비공개":
-    title = "[" + category + "] " + company
+def build_subject(job):
+    """제목 생성 - [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무] 포맷"""
+    # 1. 경력 구분 (신입/경력/신입경력)
+    exp = job.get("experience_type", job.get("type", ""))
+    if "신입" in exp and "경력" in exp:
+        exp_tag = "신입경력"
+    elif "신입" in exp:
+        exp_tag = "신입"
+    elif "경력" in exp:
+        exp_tag = "경력"
+    else:
+        exp_tag = "신입경력"
+
+    # 2. 카테고리 (건설/제조/공공/기타)
+    cat = job.get("category", "")
+    if cat in ["건설", "제조", "공공"]:
+        cat_tag = cat
+    else:
+        cat_tag = "기타"
+
+    # 3. 회사명
+    company = clean_forbidden_words(job.get("company", ""))
+    if not company or company == "비공개":
+        company = "비공개"
+
+    # 4. 담당업무 (position -> duty -> raw_title 순으로 정제)
+    position = clean_forbidden_words(job.get("position", ""))
+    duty = clean_forbidden_words(job.get("duty", ""))
+    raw_title = clean_forbidden_words(job.get("raw_title", ""))
+
+    clean_duty = ""
     if position and position != "상세내용 참조":
-        # 모집분야도 경로형이면 정리
-        clean_pos = clean_path_title(position)
-        if clean_pos and clean_pos != company:
-            title += " - " + clean_pos
-else:
-    # 회사명 없으면 raw_title 정리해서 사용
-    clean_title = clean_path_title(raw_title) if raw_title else ""
-    if not clean_title:
-        clean_title = clean_path_title(position) if position else "채용공고"
-    title = "[" + category + "] " + clean_title
+        clean_duty = clean_path_title(position)
+    
+    if not clean_duty and duty and duty != "상세내용 참조":
+        clean_duty = clean_path_title(duty)
+        
+    if not clean_duty and raw_title:
+        clean_duty = clean_path_title(raw_title)
 
-# 길이 제한
-if len(title) > 80:
-    title = title[:77] + "..."
-return title
+    if not clean_duty:
+        clean_duty = "채용공고"
+
+    # 공식 제목 조합
+    title = "[" + exp_tag + "] [" + cat_tag + "] [" + company + "] [" + clean_duty + "]"
+
+    # 길이 제한
+    if len(title) > 80:
+        title = title[:77] + "..."
+    return title
 
 def build_content(job): """본문 생성 - 출처 노출 없이""" lines = [] lines.append("📌 채용 정보") lines.append("")
 # 회사명
@@ -97,7 +123,7 @@ return "\n".join(lines)
 def post_to_cafe(job, access_token): subject = build_subject(job) content = build_content(job)
 print("  📝 제목:", subject)
 
-# 본문만 HTML 엔티티 변환을 수행하고, 제목은 변환하지 않는 원본 한글 텍스트를 전송합니다.
+# 제목은 그대로 한글 전송 (외계어 방지), 본문만 엔티티 변환
 encoded_subject = subject
 encoded_content = to_html_entity(content)
 
