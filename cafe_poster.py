@@ -25,7 +25,9 @@ def get_access_token():
     return data["access_token"]
 
 def to_html_entity(text):
-    """비-ASCII 문자를 HTML 엔티티로 변환"""
+    """비-ASCII 문자를 HTML 엔티티로 변환 (본문용)"""
+    if not text:
+        return ""
     result = ""
     for ch in text:
         if ord(ch) < 128:
@@ -35,83 +37,97 @@ def to_html_entity(text):
     return result
 
 def clean_forbidden_words(text):
-    """출처가 드러나는 단어 제거"""
+    """출처가 드러나는 단어 제거 및 불필요 특수문자/공백 정돈"""
     if not text:
-        return text
-    # 금칙어 리스트 (대소문자 구분 없이)
+        return ""
     forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety"]
     for word in forbidden:
         text = text.replace(word, "")
-    # 정리: 연속 공백, 앞뒤 특수문자 제거
-    text = text.replace(" ", " ").strip()
-    # 앞뒤에 남은 > < / | 등 제거
-    while text and text[0] in ">/<|- ":
+    
+    # 줄바꿈 제거 및 연속 공백 정리
+    text = " ".join(text.split())
+    
+    # 앞뒤 불필요한 특수문자 제거
+    while text and text[0] in ">/<|- 癤 ":
         text = text[1:].strip()
-    while text and text[-1] in ">/<|- ":
+    while text and text[-1] in ">/<|- 癤 ":
         text = text[:-1].strip()
     return text
 
 def clean_path_title(title):
-    """경로형 제목 정리: 'A > B > C' → 마지막 유의미한 부분 추출"""
-    if ">" in title:
-        parts = [p.strip() for p in title.split(">")]
-        # 각 부분에서 금칙어 제거
-        parts = [clean_forbidden_words(p) for p in parts]
-        # 빈 값과 일반 카테고리 단어 제거
-        skip_words = ["구인정보", "채용정보", "채용", "구인", ""]
-        meaningful = [p for p in parts if p and p not in skip_words]
-        if meaningful:
-            # 가장 구체적인 정보(보통 첫 번째)를 선택
-            return meaningful[0]
+    """경로형 텍스트 정리: 구인정보, 기타 등 노이즈 단어 제거 후 핵심 추출"""
+    if not title:
+        return ""
+    
+    # '>' 구분자 제거
+    parts = [p.strip() for p in title.split(">")]
+    parts = [clean_forbidden_words(p) for p in parts]
+    
+    # 노이즈 단어 리스트
+    skip_words = ["구인정보", "채용정보", "채용", "구인", "기타", "페이지 정보", "작성일", "관련링크", ""]
+    meaningful = [p for p in parts if p and p not in skip_words]
+    
+    if meaningful:
+        return meaningful[0]
     return title
 
 def build_subject(job):
     """
-    요청된 포맷에 맞춘 제목 생성
-    형식: [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무]
+    제목 템플릿: [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무]
+    본문에 출력되는 것과 동일한 한글 텍스트를 추출해 조립
     """
-    # 1. 신입/경력/신입경력
-    exp_raw = job.get("experience_type", job.get("type", ""))
+    # 1. 고용 형태 [신입 / 경력 / 신입경력]
+    exp_raw = str(job.get("experience_type", job.get("type", "")))
     if "신입" in exp_raw and "경력" in exp_raw:
-        exp = "신입경력"
+        exp_tag = "신입경력"
     elif "신입" in exp_raw:
-        exp = "신입"
+        exp_tag = "신입"
     elif "경력" in exp_raw:
-        exp = "경력"
+        exp_tag = "경력"
     else:
-        exp = "신입경력"
+        exp_tag = "신입경력"
 
-    # 2. 건설/제조/공공/기타
-    cat_raw = job.get("category", "")
+    # 2. 카테고리 [건설 / 제조 / 공공 / 기타]
+    cat_raw = str(job.get("category", ""))
     if cat_raw in ["건설", "제조", "공공"]:
-        cat = cat_raw
+        cat_tag = cat_raw
     else:
-        cat = "기타"
+        cat_tag = "기타"
 
-    # 3. 회사명
+    # 3. 회사명 (본문에 나오는 회사명과 동일)
     company = clean_forbidden_words(job.get("company", ""))
     if not company or company == "비공개":
         company = "비공개"
 
-    # 4. 담당업무 (duty, position, raw_title 순으로 정제)
+    # 4. 담당업무 (모집분야 > duty > position 순으로 깨끗한 한글만 파싱)
+    position = clean_forbidden_words(job.get("position", ""))
     duty = clean_forbidden_words(job.get("duty", ""))
-    if not duty or duty == "상세내용 참조":
-        position = clean_forbidden_words(job.get("position", ""))
-        duty = clean_path_title(position) if position else ""
+    
+    # 모집분야(position)가 잘 들어와있다면 최우선 사용
+    clean_duty = clean_path_title(position) if position and position != "상세내용 참조" else ""
+    
+    # 모집분야가 없으면 duty 파싱
+    if not clean_duty and duty and duty != "상세내용 참조":
+        # 본문 전체가 들어오는 케이스 방지 (첫 줄 또는 핵심 키워드만 추출)
+        first_line = duty.split("\n")[0]
+        clean_duty = clean_path_title(first_line)
 
-    if not duty or duty == "상세내용 참조":
+    # 그래도 없으면 raw_title 사용
+    if not clean_duty:
         raw_title = clean_forbidden_words(job.get("raw_title", ""))
-        duty = clean_path_title(raw_title) if raw_title else "채용공고"
+        clean_duty = clean_path_title(raw_title) if raw_title else "채용공고"
 
-    title = f"[{exp}] [{cat}] [{company}] [{duty}]"
+    # 포맷 구성
+    subject = f"[{exp_tag}] [{cat_tag}] [{company}] [{clean_duty}]"
 
-    # 길이 제한
-    if len(title) > 80:
-        title = title[:77] + "..."
-    return title
+    # 제목 길이 제한 (네이버 카페 기준 80자)
+    if len(subject) > 80:
+        subject = subject[:77] + "..."
+        
+    return subject
 
 def build_content(job):
-    """본문 생성 - 출처 노출 없이"""
+    """본문 생성"""
     lines = []
     lines.append("📌 채용 정보")
     lines.append("")
@@ -124,10 +140,9 @@ def build_content(job):
     # 모집분야
     position = clean_forbidden_words(job.get("position", ""))
     if position and position != "상세내용 참조":
-        # 경로형이면 정리
-        position = clean_path_title(position)
-        if position:
-            lines.append("👔 모집분야: " + position)
+        clean_pos = clean_path_title(position)
+        if clean_pos:
+            lines.append("👔 모집분야: " + clean_pos)
 
     # 담당업무
     duty = clean_forbidden_words(job.get("duty", ""))
@@ -150,9 +165,8 @@ def build_content(job):
     lines.append("─────────────────────────")
     lines.append("")
 
-    # 지원 링크만 표시 (외부 사이트 링크 - 사람인 등)
+    # 지원 링크만 표시
     apply_link = job.get("apply_link", "")
-    # ⚠️ iSAFETY 링크는 절대 표시 안 함
     if apply_link and "isafety" not in apply_link.lower():
         lines.append("🔗 지원/상세 링크")
         lines.append(apply_link)
@@ -168,28 +182,31 @@ def post_to_cafe(job, access_token):
     subject = build_subject(job)
     content = build_content(job)
 
-    print("  📝 제목:", subject)
+    print("  📝 생성된 제목:", subject)
 
-    # 💡 [핵심 해결책]
-    # 본문(content)만 HTML 엔티티 변환(인코딩)을 진행하고, 
-    # 제목(subject)은 인코딩하지 않은 원본 한글 텍스트 그대로 전송합니다.
-    encoded_subject = subject 
+    # 본문은 기존처럼 HTML 엔티티 변환
     encoded_content = to_html_entity(content)
 
-    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
+    url = f"https://openapi.naver.com/v1/cafe/{CAFE_ID}/menu/{MENU_ID}/articles"
     headers = {
-        "Authorization": "Bearer " + access_token,
+        "Authorization": f"Bearer {access_token}",
+        # UTF-8 인코딩을 명시적으로 헤더에 지정
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+    }
+
+    # 💡 [핵심 해결책] 
+    # requests가 파이썬 서버 환경 인코딩을 타지 않도록 subject와 content를 
+    # UTF-8 바이트로 명시적 변환 전송합니다.
+    payload = {
+        "subject": subject.encode("utf-8"),
+        "content": encoded_content.encode("utf-8"),
+        "openyn": "true",
     }
 
     res = requests.post(
         url,
         headers=headers,
-        data={
-            "subject": encoded_subject,
-            "content": encoded_content,
-            "openyn": "true",
-        },
+        data=payload,
         timeout=15
     )
 
