@@ -1,6 +1,7 @@
 import os
 import requests
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote, urlencode
 
 CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
 CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
@@ -31,39 +32,30 @@ def get_access_token():
 def post_article(access_token, subject, content):
     url = f"https://openapi.naver.com/v1/cafe/{CAFE_ID}/menu/{MENU_ID}/articles"
     
-    # ⭐ 핵심: dict를 직접 넘기고, requests가 자동 처리하도록 함
-    # 단, Session을 사용해서 인코딩을 명시적으로 제어
+    # ⭐⭐⭐ 검증된 이중 인코딩 방식 (sfixer.tistory.com/233)
+    # 1단계: 각 값을 quote()로 UTF-8 URL 인코딩
+    encoded_subject = quote(subject)
+    encoded_content = quote(content)
     
-    session = requests.Session()
+    # 2단계: urlencode()로 한 번 더 인코딩 후 bytes로 변환
+    data = urlencode({
+        'subject': encoded_subject,
+        'content': encoded_content,
+        'openyn': 'true',
+    }).encode()
+    
+    print(f"🔍 최종 전송 data (앞 150자): {data[:150]}")
     
     headers = {
         "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Accept-Charset": "UTF-8",
-        "Accept": "application/json",
     }
     
-    # ⭐ 방법 1: files 파라미터로 multipart/form-data 전송 시도
-    # 네이버 카페 API가 multipart도 지원하는지 확인
+    res = requests.post(url, headers=headers, data=data, timeout=15)
     
-    # 우선 params 방식으로 시도 (URL 쿼리스트링 방식)
-    res = session.post(
-        url,
-        headers=headers,
-        params={  # ⭐ data가 아닌 params로!
-            "subject": subject,
-            "content": content,
-            "openyn": "true",
-        },
-        timeout=15
-    )
-    
-    print(f"📨 요청 URL: {res.request.url[:200]}")
     print(f"📨 응답 상태: {res.status_code}")
     print(f"📨 응답 본문: {res.text}")
     
     result = res.json()
-    
     status = result.get("message", {}).get("status")
     if status != "200":
         raise RuntimeError(f"게시글 등록 실패: {result}")
@@ -76,13 +68,13 @@ def post_article(access_token, subject, content):
 if __name__ == "__main__":
     today = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     
-    subject = f"[테스트] {today} 한글"
-    content = f"""<p>안녕하세요</p>
+    subject = f"[자동] {today} 안전 브리핑"
+    content = f"""<p>안녕하세요, 안전과장입니다.</p>
 <p>일시: {today}</p>
-<p>한글 인코딩 테스트입니다.</p>
+<p>GitHub Actions로 자동 게시된 한글 테스트입니다.</p>
 <ul>
-<li>테스트 1</li>
-<li>테스트 2</li>
+<li>안전수칙 1: 보호구 착용</li>
+<li>안전수칙 2: 작업 전 점검</li>
 </ul>"""
     
     print(f"📝 제목: {subject}")
