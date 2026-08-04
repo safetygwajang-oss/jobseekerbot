@@ -24,6 +24,16 @@ def get_access_token():
         raise RuntimeError("토큰 재발급 실패: " + str(data))
     return data["access_token"]
 
+def to_html_entity(text):
+    """비-ASCII 문자를 HTML 엔티티로 변환"""
+    result = ""
+    for ch in text:
+        if ord(ch) < 128:
+            result += ch
+        else:
+            result += "&#" + str(ord(ch)) + ";"
+    return result
+
 def clean_forbidden_words(text):
     """출처가 드러나는 단어 제거"""
     if not text:
@@ -51,35 +61,39 @@ def clean_path_title(title):
         skip_words = ["구인정보", "채용정보", "채용", "구인", ""]
         meaningful = [p for p in parts if p and p not in skip_words]
         if meaningful:
+            # 가장 구체적인 정보(보통 첫 번째)를 선택
             return meaningful[0]
     return title
 
 def build_subject(job):
     """
-    공식 제목 생성: [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무]
+    요청된 포맷에 맞춘 제목 생성
+    형식: [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무]
     """
-    # 1. 고용형태 (신입 / 경력 / 신입경력)
-    experience = job.get("experience_type", job.get("type", "신입경력"))
-    if "신입" in experience and "경력" in experience:
-        exp_tag = "신입경력"
-    elif "신입" in experience:
-        exp_tag = "신입"
-    elif "경력" in experience:
-        exp_tag = "경력"
+    # 1. 신입/경력/신입경력
+    exp_raw = job.get("experience_type", job.get("type", ""))
+    if "신입" in exp_raw and "경력" in exp_raw:
+        exp = "신입경력"
+    elif "신입" in exp_raw:
+        exp = "신입"
+    elif "경력" in exp_raw:
+        exp = "경력"
     else:
-        exp_tag = "신입경력"
+        exp = "신입경력"
 
-    # 2. 업종 카테고리 (건설 / 제조 / 공공 / 기타)
-    category = job.get("category", "기타")
-    allowed_categories = ["건설", "제조", "공공"]
-    cat_tag = category if category in allowed_categories else "기타"
+    # 2. 건설/제조/공공/기타
+    cat_raw = job.get("category", "")
+    if cat_raw in ["건설", "제조", "공공"]:
+        cat = cat_raw
+    else:
+        cat = "기타"
 
     # 3. 회사명
     company = clean_forbidden_words(job.get("company", ""))
     if not company or company == "비공개":
-        company = "회사명미상"
+        company = "비공개"
 
-    # 4. 담당업무 (duty, position, raw_title 순으로 파싱)
+    # 4. 담당업무 (duty, position, raw_title 순으로 정제)
     duty = clean_forbidden_words(job.get("duty", ""))
     if not duty or duty == "상세내용 참조":
         position = clean_forbidden_words(job.get("position", ""))
@@ -89,14 +103,12 @@ def build_subject(job):
         raw_title = clean_forbidden_words(job.get("raw_title", ""))
         duty = clean_path_title(raw_title) if raw_title else "채용공고"
 
-    # 조합: [신입/경력/신입경력] [건설/제조/공공/기타] [회사명] [담당업무]
-    subject = f"[{exp_tag}] [{cat_tag}] [{company}] [{duty}]"
+    title = f"[{exp}] [{cat}] [{company}] [{duty}]"
 
-    # 길이 제한 (네이버 카페 제목 글자수 안전 영역)
-    if len(subject) > 80:
-        subject = subject[:77] + "..."
-
-    return subject
+    # 길이 제한
+    if len(title) > 80:
+        title = title[:77] + "..."
+    return title
 
 def build_content(job):
     """본문 생성 - 출처 노출 없이"""
@@ -112,6 +124,7 @@ def build_content(job):
     # 모집분야
     position = clean_forbidden_words(job.get("position", ""))
     if position and position != "상세내용 참조":
+        # 경로형이면 정리
         position = clean_path_title(position)
         if position:
             lines.append("👔 모집분야: " + position)
@@ -139,6 +152,7 @@ def build_content(job):
 
     # 지원 링크만 표시 (외부 사이트 링크 - 사람인 등)
     apply_link = job.get("apply_link", "")
+    # ⚠️ iSAFETY 링크는 절대 표시 안 함
     if apply_link and "isafety" not in apply_link.lower():
         lines.append("🔗 지원/상세 링크")
         lines.append(apply_link)
@@ -156,19 +170,24 @@ def post_to_cafe(job, access_token):
 
     print("  📝 제목:", subject)
 
-    url = f"https://openapi.naver.com/v1/cafe/{CAFE_ID}/menu/{MENU_ID}/articles"
+    # 💡 [핵심 해결책]
+    # 본문(content)만 HTML 엔티티 변환(인코딩)을 진행하고, 
+    # 제목(subject)은 인코딩하지 않은 원본 한글 텍스트 그대로 전송합니다.
+    encoded_subject = subject 
+    encoded_content = to_html_entity(content)
+
+    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
     headers = {
-        "Authorization": f"Bearer {access_token}",
+        "Authorization": "Bearer " + access_token,
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     }
 
-    # HTML 엔티티 변환 없이 원본 한글 문자열을 그대로 전송합니다.
     res = requests.post(
         url,
         headers=headers,
         data={
-            "subject": subject,
-            "content": content,
+            "subject": encoded_subject,
+            "content": encoded_content,
             "openyn": "true",
         },
         timeout=15
