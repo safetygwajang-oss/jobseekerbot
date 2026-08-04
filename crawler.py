@@ -12,7 +12,6 @@ HEADERS = {
 
 def debug_detail_page():
     """상세 페이지 1건 진단"""
-    # 1. 리스트에서 첫 번째 링크 가져오기
     print("=" * 60)
     print("🔍 리스트 페이지 접근")
     print("=" * 60)
@@ -34,7 +33,6 @@ def debug_detail_page():
     
     print("상세 URL:", detail_url)
     
-    # 2. 상세 페이지 가져오기
     print("\n" + "=" * 60)
     print("🔍 상세 페이지 진단")
     print("=" * 60)
@@ -62,7 +60,7 @@ def debug_detail_page():
         print(f"  table[{i}] 셀 {len(cells)}개:")
         print(f"    {texts[:12]}")
     
-    # [C] dl/dt/dd 구조 확인
+    # [C] dl/dt/dd 구조
     print("\n[C] <dl>/<dt>/<dd> 확인:")
     dls = soup.find_all("dl")
     print(f"  dl 개수: {len(dls)}")
@@ -75,25 +73,21 @@ def debug_detail_page():
     # [D] "경력", "근무지", "마감일" 텍스트 주변 탐색
     print("\n[D] 주요 라벨 주변 요소:")
     for label in ["경력", "근무지", "마감일"]:
-        # 라벨을 정확히 포함하는 요소들 찾기
         found = soup.find_all(string=lambda s: s and s.strip() == label)
         print(f"  '{label}' 정확 매칭: {len(found)}개")
         for f in found[:2]:
             parent = f.parent
-            # 부모 태그 정보
             p_info = f"<{parent.name}"
             if parent.get("class"):
                 p_info += f" class='{' '.join(parent.get('class'))}'"
             p_info += ">"
             print(f"    부모: {p_info}")
-            # 다음 형제 요소
             next_sib = parent.find_next_sibling()
             if next_sib:
                 print(f"    다음 형제: <{next_sib.name}> = '{next_sib.get_text(' ', strip=True)[:50]}'")
     
-    # [E] 회사명 후보 (건물 아이콘 근처)
+    # [E] 회사명 후보
     print("\n[E] 회사명 후보:")
-    # ico, icon, building, company 클래스 검색
     for cls_keyword in ["company", "corp", "biz", "info"]:
         elems = soup.find_all(class_=lambda c: c and cls_keyword in " ".join(c).lower())
         for e in elems[:3]:
@@ -109,17 +103,15 @@ def debug_detail_page():
             txt = area.get_text(" ", strip=True)[:200]
             print(f"  {sel}: {txt}")
     
-    # [G] 전체 HTML 중 정보박스 추정 부분
-    print("\n[G] '마감일' 텍스트 주변 HTML (300자):")
-    if soup.find(string=lambda s: s and "마감일" in s):
-        target = soup.find(string=lambda s: s and s.strip() == "마감일")
-        if target:
-            # 상위 3단계까지 올라간 후 HTML 출력
-            container = target.parent
-            for _ in range(3):
-                if container.parent:
-                    container = container.parent
-            print(str(container)[:800])
+    # [G] '마감일' 주변 HTML
+    print("\n[G] '마감일' 텍스트 주변 HTML (800자):")
+    target = soup.find(string=lambda s: s and s.strip() == "마감일")
+    if target:
+        container = target.parent
+        for _ in range(3):
+            if container.parent:
+                container = container.parent
+        print(str(container)[:800])
     
     print("\n" + "=" * 60)
 
