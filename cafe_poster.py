@@ -1,5 +1,4 @@
 import os
-import hashlib
 import requests
 
 CAFE_ID = "31767633"
@@ -39,13 +38,16 @@ def to_html_entity(text):
 
 
 def clean_forbidden_words(text):
-    """출처 노출 방지 - iSAFETY 관련 단어 제거"""
+    """출처가 드러나는 단어 제거"""
     if not text:
         return text
-    forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety", "아이세이프티", "아이세이프"]
+    # 금칙어 리스트 (대소문자 구분 없이)
+    forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety"]
     for word in forbidden:
         text = text.replace(word, "")
+    # 정리: 연속 공백, 앞뒤 특수문자 제거
     text = text.replace("  ", " ").strip()
+    # 앞뒤에 남은 > < / | 등 제거
     while text and text[0] in ">/<|- ":
         text = text[1:].strip()
     while text and text[-1] in ">/<|- ":
@@ -53,158 +55,103 @@ def clean_forbidden_words(text):
     return text
 
 
-# ==========================================================
-# 🎯 핵심: PC 리스트에서 한글이 깨지는 문제 해결
-# → 제목을 ASCII 문자로만 구성 (한글 완전 제거)
-# → 진짜 정보(회사명/직무)는 본문 최상단 헤드라인 박스에 표시
-# ==========================================================
-
-# 경력구분 → 영문 태그 매핑 (제목용)
-CAREER_TAG_MAP = {
-    "신입": "ENTRY",
-    "경력": "CAREER",
-    "신입/경력": "ALL",
-    "경력무관": "ANY",
-    "인턴": "INTERN",
-    "계약직": "CONTRACT",
-}
-
-
-def make_short_id(job):
-    """회사명+모집분야 기반 4자리 고유 ID 생성 (예: A1B2)
-    
-    PC 리스트에서 각 글을 구분하기 위한 식별자.
-    같은 회사의 다른 공고도 구분 가능.
-    """
-    company = job.get("company", "")
-    position = job.get("position", "")
-    seed = (company + "|" + position).encode("utf-8")
-    h = hashlib.md5(seed).hexdigest().upper()
-    return h[:4]
+def clean_path_title(title):
+    """경로형 제목 정리: 'A > B > C' → 마지막 유의미한 부분 추출"""
+    if ">" in title:
+        parts = [p.strip() for p in title.split(">")]
+        # 각 부분에서 금칙어 제거
+        parts = [clean_forbidden_words(p) for p in parts]
+        # 빈 값과 일반 카테고리 단어 제거
+        skip_words = ["구인정보", "채용정보", "채용", "구인", ""]
+        meaningful = [p for p in parts if p and p not in skip_words]
+        if meaningful:
+            # 가장 구체적인 정보(보통 첫 번째)를 선택
+            return meaningful[0]
+    return title
 
 
 def build_subject(job):
-    """
-    제목: ASCII 문자로만 구성 (PC 리스트에서 안 깨지게)
-    형식: [CAREER] JOB #A1B2 (~26-10-03)
-    """
-    career_tag = job.get("career_tag", "경력무관")
-    deadline = job.get("deadline", "")
+    """제목 생성 - iSAFETY 노출 방지"""
+    category = job.get("category", "기타")
+    company = job.get("company", "비공개")
+    position = job.get("position", "")
+    raw_title = job.get("raw_title", "")
 
-    # 경력구분 영문 변환
-    eng_tag = CAREER_TAG_MAP.get(career_tag, "JOB")
+    # 금칙어 제거
+    company = clean_forbidden_words(company)
+    position = clean_forbidden_words(position)
+    raw_title = clean_forbidden_words(raw_title)
 
-    # 고유 ID
-    short_id = make_short_id(job)
-
-    # 기본: [태그] JOB #ID
-    subject = "[" + eng_tag + "] JOB #" + short_id
-
-    # 마감일 추가 (숫자/기호만이라 안전)
-    if deadline:
-        if "채용시" in deadline or "상시" in deadline:
-            subject += " (OPEN)"
-        else:
-            # 26-10-03 형태는 숫자+하이픈이라 ASCII
-            # 혹시 다른 형태면 숫자/하이픈/점/슬래시만 추출
-            safe_deadline = "".join(
-                c for c in deadline if c.isascii() and (c.isdigit() or c in "-./")
-            )
-            if safe_deadline:
-                subject += " (~" + safe_deadline + ")"
-
-    return subject
-
-
-def build_headline_box(job):
-    """본문 최상단 헤드라인 박스 - '진짜 제목' 역할"""
-    lines = []
-    
-    career_tag = job.get("career_tag", "경력무관")
-    company = clean_forbidden_words(job.get("company", ""))
-    position = clean_forbidden_words(job.get("position", ""))
-    deadline = job.get("deadline", "")
-
-    # 메인 제목 라인 구성
-    main_title = "[" + career_tag + "]"
+    # 회사명이 있으면 우선 사용
     if company and company != "비공개":
-        main_title += " " + company
-    if position and position != "채용공고":
-        if company and company != "비공개":
-            main_title += " - " + position
-        else:
-            main_title += " " + position
+        title = "[" + category + "] " + company
+        if position and position != "상세내용 참조":
+            # 모집분야도 경로형이면 정리
+            clean_pos = clean_path_title(position)
+            if clean_pos and clean_pos != company:
+                title += " - " + clean_pos
+    else:
+        # 회사명 없으면 raw_title 정리해서 사용
+        clean_title = clean_path_title(raw_title) if raw_title else ""
+        if not clean_title:
+            clean_title = clean_path_title(position) if position else "채용공고"
+        title = "[" + category + "] " + clean_title
 
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📢 " + main_title)
-    if deadline:
-        if "채용시" in deadline or "상시" in deadline:
-            lines.append("     🕐 상시채용")
-        else:
-            lines.append("     🕐 마감: ~" + deadline)
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    
-    return lines
+    # 길이 제한
+    if len(title) > 80:
+        title = title[:77] + "..."
+    return title
 
 
 def build_content(job):
-    """본문 - 최상단에 헤드라인 박스로 진짜 제목 표시"""
+    """본문 생성 - 출처 노출 없이"""
     lines = []
-
-    # ========== 🎯 헤드라인 박스 (진짜 제목) ==========
-    lines.extend(build_headline_box(job))
-    lines.append("")
-    lines.append("")
-
-    # ========== 상세 정보 ==========
     lines.append("📌 채용 정보")
     lines.append("")
 
+    # 회사명
     company = clean_forbidden_words(job.get("company", ""))
     if company and company != "비공개":
-        lines.append("🏢 회사·기관: " + company)
+        lines.append("🏢 회사명: " + company)
 
+    # 모집분야
     position = clean_forbidden_words(job.get("position", ""))
-    if position and position != "채용공고":
-        lines.append("👔 모집분야: " + position)
+    if position and position != "상세내용 참조":
+        # 경로형이면 정리
+        position = clean_path_title(position)
+        if position:
+            lines.append("👔 모집분야: " + position)
 
-    career_tag = job.get("career_tag", "")
-    if career_tag:
-        lines.append("💼 경력구분: " + career_tag)
+    # 담당업무
+    duty = clean_forbidden_words(job.get("duty", ""))
+    if duty and duty != "상세내용 참조":
+        if len(duty) > 300:
+            duty = duty[:297] + "..."
+        lines.append("📝 담당업무: " + duty)
 
-    location = job.get("location", "")
-    if location:
-        lines.append("📍 근무지: " + location)
-
+    # 마감일
     deadline = job.get("deadline", "")
     if deadline:
         lines.append("📅 마감일: " + deadline)
 
+    # 카테고리
     category = job.get("category", "")
     if category:
         lines.append("🏷️ 분류: " + category)
-
-    # 담당업무 (있을 경우만)
-    duty = clean_forbidden_words(job.get("duty", ""))
-    if duty and duty != "상세내용 참조" and len(duty) > 10:
-        if len(duty) > 300:
-            duty = duty[:297] + "..."
-        lines.append("")
-        lines.append("📝 담당업무")
-        lines.append(duty)
 
     lines.append("")
     lines.append("─────────────────────────")
     lines.append("")
 
-    # 외부 지원 링크 (iSAFETY 아닌 경우만)
+    # 지원 링크만 표시 (외부 사이트 링크 - 사람인 등)
     apply_link = job.get("apply_link", "")
+    # ⚠️ iSAFETY 링크는 절대 표시 안 함
     if apply_link and "isafety" not in apply_link.lower():
         lines.append("🔗 지원/상세 링크")
         lines.append(apply_link)
         lines.append("")
-        lines.append("─────────────────────────")
 
+    lines.append("─────────────────────────")
     lines.append("※ 지원 전 반드시 채용공고 원문을 확인해주세요.")
     lines.append("※ 본 정보는 참고용이며, 채용 조건은 변경될 수 있습니다.")
 
