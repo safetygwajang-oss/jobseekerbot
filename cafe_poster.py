@@ -440,4 +440,185 @@ def build_content(job, use_emoji=True):
 
     lines.append(E["sub_line"])
     lines.append(E["check"] + " 지원 전 반드시 채용공고 원문을 확인해주세요.")
-    lines.append
+    lines.append(E["check"] + " 본 정보는 참고용이며, 채용 조건은 변경될 수 있습니다.")
+
+    return "\n".join(lines)
+
+
+# ==========================================================
+# 🚀 게시 - 인코딩 전략별 처리
+# ==========================================================
+def _send_request(url, headers, body_bytes):
+    """실제 요청 전송"""
+    try:
+        res = requests.post(url, headers=headers, data=body_bytes, timeout=15)
+        return res
+    except Exception as e:
+        print("  ❌ 요청 예외:", type(e).__name__, str(e)[:100])
+        return None
+
+
+def _parse_response(res):
+    """응답 파싱 → (성공여부, article_url)"""
+    if res is None:
+        return False, None
+
+    print("  📨 상태코드:", res.status_code)
+    print("  📨 응답:", res.text[:300])
+
+    try:
+        result = res.json()
+    except Exception:
+        print("  ❌ JSON 파싱 실패")
+        return False, None
+
+    status = result.get("message", {}).get("status")
+    if status != "200":
+        print("  ❌ 실패 - status:", status)
+        return False, None
+
+    article_url = result["message"]["result"]["articleUrl"]
+    return True, article_url
+
+
+def _post_korean_euckr(subject, content, access_token):
+    """
+    ⭐ EUC-KR 인코딩으로 전송 (네이버 카페 레거시 방식)
+    - subject/content를 EUC-KR로 percent-encoding
+    - 이모지 등 EUC-KR 불가 문자는 자동 제외됨
+    """
+    print("  🔧 인코딩: EUC-KR")
+
+    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
+    headers = {
+        "Authorization": "Bearer " + access_token,
+        "Content-Type": "application/x-www-form-urlencoded; charset=EUC-KR",
+    }
+
+    try:
+        # EUC-KR로 인코딩 (실패 문자는 무시)
+        subject_encoded = quote(subject.encode("euc-kr", errors="ignore"))
+        content_encoded = quote(content.encode("euc-kr", errors="ignore"))
+        openyn_encoded = quote("true")
+
+        body_str = (
+            "subject=" + subject_encoded +
+            "&content=" + content_encoded +
+            "&openyn=" + openyn_encoded
+        )
+        body_bytes = body_str.encode("ascii")
+
+        res = _send_request(url, headers, body_bytes)
+        return _parse_response(res)
+    except Exception as e:
+        print("  ❌ EUC-KR 인코딩 예외:", type(e).__name__, str(e)[:100])
+        return False, None
+
+
+def _post_korean_utf8(subject, content, access_token):
+    """UTF-8 인코딩으로 전송 (표준 방식)"""
+    print("  🔧 인코딩: UTF-8")
+
+    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
+    headers = {
+        "Authorization": "Bearer " + access_token,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+    }
+
+    payload = {
+        "subject": subject,
+        "content": content,
+        "openyn": "true",
+    }
+
+    try:
+        res = requests.post(url, headers=headers, data=payload, timeout=15)
+        return _parse_response(res)
+    except Exception as e:
+        print("  ❌ UTF-8 요청 예외:", type(e).__name__, str(e)[:100])
+        return False, None
+
+
+def _post_english_safe(subject, content, access_token):
+    """영문 안전 모드: HTML 엔티티 방식 (검증된 방식)"""
+    print("  🔧 인코딩: HTML Entity (안전 모드)")
+
+    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
+    headers = {
+        "Authorization": "Bearer " + access_token,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+    }
+
+    encoded_subject = to_html_entity(subject)
+    encoded_content = to_html_entity(content)
+
+    try:
+        res = requests.post(
+            url,
+            headers=headers,
+            data={
+                "subject": encoded_subject,
+                "content": encoded_content,
+                "openyn": "true",
+            },
+            timeout=15
+        )
+        return _parse_response(res)
+    except Exception as e:
+        print("  ❌ HTML Entity 요청 예외:", type(e).__name__, str(e)[:100])
+        return False, None
+
+
+def post_to_cafe(job, access_token):
+    """
+    메인 게시 함수
+    - TITLE_MODE에 따라 전략 선택
+    - 실패 시 자동으로 영문 모드로 폴백
+    """
+    subject = build_subject(job)
+
+    print("  📝 제목:", subject)
+    print("  🎛️ 모드:", TITLE_MODE)
+
+    # ==========================================================
+    # 1차 시도: 설정된 모드로
+    # ==========================================================
+    if TITLE_MODE == "korean_euckr":
+        # EUC-KR은 이모지 불가 → 본문에서 이모지 제거
+        content = build_content(job, use_emoji=False)
+        ok, article_url = _post_korean_euckr(subject, content, access_token)
+
+    elif TITLE_MODE == "korean_utf8":
+        content = build_content(job, use_emoji=True)
+        ok, article_url = _post_korean_utf8(subject, content, access_token)
+
+    elif TITLE_MODE == "hybrid":
+        content = build_content(job, use_emoji=True)
+        # 하이브리드는 한글 포함이므로 EUC-KR 먼저 시도
+        content_no_emoji = build_content(job, use_emoji=False)
+        ok, article_url = _post_korean_euckr(subject, content_no_emoji, access_token)
+
+    else:  # english
+        content = build_content(job, use_emoji=True)
+        ok, article_url = _post_english_safe(subject, content, access_token)
+
+    if ok:
+        print("  ✅ 성공:", article_url)
+        return article_url
+
+    # ==========================================================
+    # 2차 시도(폴백): 영문 안전 모드
+    # ==========================================================
+    if TITLE_MODE != "english":
+        print("  🔁 영문 안전 모드로 폴백 재시도...")
+        subject_en = build_subject_english(job)
+        content_en = build_content(job, use_emoji=True)
+        print("  📝 [폴백] 제목:", subject_en)
+
+        ok, article_url = _post_english_safe(subject_en, content_en, access_token)
+        if ok:
+            print("  ✅ [폴백] 성공:", article_url)
+            return article_url
+
+    print("  ❌ 최종 실패")
+    return None
