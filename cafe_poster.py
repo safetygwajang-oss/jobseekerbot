@@ -1,11 +1,24 @@
 import os
 import re
 import requests
+from urllib.parse import quote
 
 CAFE_ID = "31767633"
 MENU_ID = "10"
 
+# ==========================================================
+# 🎛️ 제목 모드 설정
+# ==========================================================
+# "korean_euckr" : 한글 제목 + EUC-KR 인코딩 (네이버 카페용)
+# "korean_utf8"  : 한글 제목 + UTF-8 인코딩 (일반적)
+# "english"      : 영문 제목 [EXP] [COMPANY] (안전 폴백)
+# "hybrid"       : [EXP] KUMKANG 금강종합건설 (앞은 영문 안전)
+TITLE_MODE = "korean_euckr"
 
+
+# ==========================================================
+# 네이버 API 토큰
+# ==========================================================
 def get_access_token():
     CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
     CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
@@ -27,7 +40,22 @@ def get_access_token():
     return data["access_token"]
 
 
+# ==========================================================
+# 텍스트 유틸
+# ==========================================================
+def to_html_entity(text):
+    """비-ASCII 문자를 HTML 엔티티로 변환"""
+    result = ""
+    for ch in text:
+        if ord(ch) < 128:
+            result += ch
+        else:
+            result += "&#" + str(ord(ch)) + ";"
+    return result
+
+
 def clean_forbidden_words(text):
+    """출처(iSAFETY) 노출 방지"""
     if not text:
         return text
     forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety", "아이세이프티", "아이세이프"]
@@ -41,14 +69,140 @@ def clean_forbidden_words(text):
     return text
 
 
+def remove_emoji(text):
+    """이모지 제거 (EUC-KR 인코딩 실패 방지)"""
+    if not text:
+        return text
+    # 이모지 유니코드 범위 제거
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U00002700-\U000027BF"  # dingbats
+        "\U0001F900-\U0001F9FF"  # supplemental symbols
+        "\U00002600-\U000026FF"  # miscellaneous symbols
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub("", text)
+
+
 # ==========================================================
-# 🎯 제목: 한글 그대로 시도
+# 🎯 영문 변환 사전
 # ==========================================================
-def build_subject(job):
-    """
-    형식: [경력] [회사명] (~마감일)
-    한글 그대로 사용 - requests가 UTF-8 URL 인코딩 자동 처리
-    """
+CAREER_MAP = {
+    "신입": "NEW",
+    "경력": "EXP",
+    "신입/경력": "NEW/EXP",
+    "무관": "ANY",
+    "인턴": "INTERN",
+}
+
+FAMOUS_COMPANIES = {
+    "삼성전자": "SAMSUNG",
+    "삼성물산": "SAMSUNG-CT",
+    "삼성디스플레이": "SAMSUNG-DP",
+    "삼성SDI": "SAMSUNG-SDI",
+    "삼성엔지니어링": "SAMSUNG-ENG",
+    "삼성중공업": "SAMSUNG-HI",
+    "삼성바이오로직스": "SAMSUNG-BIO",
+    "SK하이닉스": "SK-HYNIX",
+    "SK이노베이션": "SK-INNO",
+    "SK에너지": "SK-ENERGY",
+    "SK온": "SK-ON",
+    "LG전자": "LG-ELEC",
+    "LG화학": "LG-CHEM",
+    "LG디스플레이": "LG-DP",
+    "LG에너지솔루션": "LG-ES",
+    "LG유플러스": "LG-UPLUS",
+    "현대자동차": "HYUNDAI-MOTOR",
+    "현대차": "HYUNDAI-MOTOR",
+    "기아": "KIA",
+    "현대모비스": "MOBIS",
+    "현대건설": "HYUNDAI-ENC",
+    "현대엔지니어링": "HYUNDAI-ENG",
+    "현대제철": "HYUNDAI-STEEL",
+    "포스코": "POSCO",
+    "포스코이앤씨": "POSCO-ENC",
+    "포스코퓨처엠": "POSCO-FM",
+    "롯데케미칼": "LOTTE-CHEM",
+    "롯데건설": "LOTTE-ENC",
+    "GS건설": "GS-ENC",
+    "GS칼텍스": "GS-CALTEX",
+    "대우건설": "DAEWOO-ENC",
+    "DL이앤씨": "DL-ENC",
+    "SK에코플랜트": "SK-ECO",
+    "한화건설": "HANWHA-ENC",
+    "한화솔루션": "HANWHA-SOL",
+    "두산에너빌리티": "DOOSAN-ENB",
+    "HD현대중공업": "HD-HHI",
+    "메디톡스": "MEDYTOX",
+    "에어퍼스트": "AIRFIRST",
+    "금강종합건설": "KUMKANG",
+    "프레시플러스": "FRESH-PLUS",
+    "CJ프레시플러스": "CJ-FRESH",
+    "CJ제일제당": "CJ-CJ",
+    "CJ대한통운": "CJ-LOG",
+    "쿠팡": "COUPANG",
+    "네이버": "NAVER",
+    "카카오": "KAKAO",
+}
+
+CHOSUNG = ['G', 'GG', 'N', 'D', 'DD', 'R', 'M', 'B', 'BB', 'S', 'SS', '', 'J', 'JJ', 'CH', 'K', 'T', 'P', 'H']
+JUNGSUNG = ['A', 'AE', 'YA', 'YAE', 'EO', 'E', 'YEO', 'YE', 'O', 'WA', 'WAE', 'OE', 'YO', 'U', 'WO', 'WE', 'WI', 'YU', 'EU', 'YI', 'I']
+JONGSUNG = ['', 'G', 'GG', 'GS', 'N', 'NJ', 'NH', 'D', 'L', 'LG', 'LM', 'LB', 'LS', 'LT', 'LP', 'LH', 'M', 'B', 'BS', 'S', 'SS', 'NG', 'J', 'CH', 'K', 'T', 'P', 'H']
+
+
+def korean_to_roman(text):
+    result = []
+    for ch in text:
+        code = ord(ch)
+        if 0xAC00 <= code <= 0xD7A3:
+            base = code - 0xAC00
+            cho = base // (21 * 28)
+            jung = (base % (21 * 28)) // 28
+            jong = base % 28
+            result.append(CHOSUNG[cho] + JUNGSUNG[jung] + JONGSUNG[jong])
+        elif ch.isascii():
+            result.append(ch.upper() if ch.isalpha() else ch)
+        elif ch in " -_/":
+            result.append("-")
+
+    roman = "".join(result)
+    if len(roman) > 20:
+        roman = roman[:20]
+    return roman if roman else "COMPANY"
+
+
+def romanize_company(company):
+    if not company:
+        return "COMPANY"
+
+    company = re.sub(r"\(주\)|\(유\)|\(재\)|\(사\)|\(합\)|\(합자\)|\(사단법인\)|\(재단법인\)", "", company)
+    company = company.replace("주식회사", "").replace("유한회사", "").replace("㈜", "")
+    company = company.strip()
+
+    if company in FAMOUS_COMPANIES:
+        return FAMOUS_COMPANIES[company]
+
+    return korean_to_roman(company)
+
+
+def clean_company_for_title(company):
+    if not company:
+        return ""
+    company = re.sub(r"\(주\)|\(유\)|\(재\)|\(사\)|\(합\)|\(합자\)|\(사단법인\)|\(재단법인\)", "", company)
+    company = company.replace("주식회사", "").replace("유한회사", "").replace("㈜", "")
+    return company.strip()
+
+
+# ==========================================================
+# 📌 제목 빌더
+# ==========================================================
+def build_subject_korean(job):
+    """한글 제목: [경력] [회사명] (~26-08-28)"""
     career = job.get("career", "").strip()
     company = job.get("company", "").strip()
     deadline = job.get("deadline", "").strip()
@@ -58,6 +212,7 @@ def build_subject(job):
         career_clean = "채용"
 
     company_clean = clean_forbidden_words(company)
+    company_clean = clean_company_for_title(company_clean)
     if not company_clean:
         company_clean = "채용공고"
 
@@ -75,12 +230,81 @@ def build_subject(job):
     return subject
 
 
+def build_subject_english(job):
+    """영문 제목: [EXP] [KUMKANG] (~26-08-28)"""
+    career = job.get("career", "").strip()
+    company = job.get("company", "").strip()
+    deadline = job.get("deadline", "").strip()
+
+    career_clean = career.rstrip(".").strip()
+    career_eng = CAREER_MAP.get(career_clean, "JOB")
+
+    company_clean = clean_forbidden_words(company)
+    company_eng = romanize_company(company_clean) if company_clean else "COMPANY"
+
+    subject = "[" + career_eng + "] [" + company_eng + "]"
+
+    if deadline:
+        if "채용시" in deadline or "상시" in deadline:
+            subject += " (OPEN)"
+        else:
+            safe_deadline = "".join(
+                c for c in deadline if c.isascii() and (c.isdigit() or c in "-./")
+            )
+            if safe_deadline:
+                subject += " (~" + safe_deadline + ")"
+
+    if len(subject) > 80:
+        subject = subject[:77] + "..."
+
+    return subject
+
+
+def build_subject_hybrid(job):
+    """하이브리드: [EXP] KUMKANG 금강종합건설 (~26-08-28)"""
+    career = job.get("career", "").strip()
+    company = job.get("company", "").strip()
+    deadline = job.get("deadline", "").strip()
+
+    career_clean = career.rstrip(".").strip()
+    career_eng = CAREER_MAP.get(career_clean, "JOB")
+
+    company_clean_ko = clean_forbidden_words(company)
+    company_clean_ko = clean_company_for_title(company_clean_ko)
+    company_eng = romanize_company(company_clean_ko) if company_clean_ko else "COMPANY"
+
+    subject = "[" + career_eng + "] " + company_eng
+    if company_clean_ko:
+        subject += " " + company_clean_ko
+
+    if deadline:
+        if "채용시" in deadline or "상시" in deadline:
+            subject += " (상시)"
+        else:
+            subject += " (~" + deadline + ")"
+
+    if len(subject) > 70:
+        subject = subject[:67] + "..."
+
+    return subject
+
+
+def build_subject(job):
+    if TITLE_MODE == "english":
+        return build_subject_english(job)
+    elif TITLE_MODE == "hybrid":
+        return build_subject_hybrid(job)
+    else:  # korean_euckr or korean_utf8
+        return build_subject_korean(job)
+
+
 # ==========================================================
-# 📝 본문
+# 📝 본문 생성
 # ==========================================================
 def strip_urls_from_duty(duty, apply_link):
     if not duty:
         return duty
+
     lines = duty.split("\n")
     cleaned = []
     for line in lines:
@@ -93,13 +317,18 @@ def strip_urls_from_duty(duty, apply_link):
                 cleaned.append(no_url)
             continue
         cleaned.append(line)
+
     result = "\n".join(cleaned)
     while "\n\n\n" in result:
         result = result.replace("\n\n\n", "\n\n")
     return result.strip()
 
 
-def build_content(job):
+def build_content(job, use_emoji=True):
+    """
+    본문 생성
+    use_emoji=False 시 이모지 제거 (EUC-KR 호환용)
+    """
     lines = []
 
     company = clean_forbidden_words(job.get("company", ""))
@@ -110,38 +339,79 @@ def build_content(job):
     location = job.get("location", "")
     apply_link = job.get("apply_link", "")
 
+    # 이모지 사용 여부에 따라 마커 선택
+    if use_emoji:
+        E = {
+            "line": "━━━━━━━━━━━━━━━━━━━━━━━",
+            "sub_line": "─────────────────────────",
+            "notice": "📢",
+            "clock": "🕐",
+            "info": "📌",
+            "company": "🏢",
+            "job": "👔",
+            "career": "💼",
+            "loc": "📍",
+            "date": "📅",
+            "tag": "🏷️",
+            "duty": "📝",
+            "link": "🔗",
+            "arrow": "→",
+            "check": "※",
+        }
+    else:
+        E = {
+            "line": "=========================",
+            "sub_line": "-------------------------",
+            "notice": "[공고]",
+            "clock": "[마감]",
+            "info": "[정보]",
+            "company": "[회사]",
+            "job": "[분야]",
+            "career": "[경력]",
+            "loc": "[근무지]",
+            "date": "[마감일]",
+            "tag": "[분류]",
+            "duty": "[담당업무]",
+            "link": "[링크]",
+            "arrow": "→",
+            "check": "※",
+        }
+
+    # 헤드라인
     main_title = "[" + (category or "채용") + "]"
     if company and company != "비공개":
         main_title += " " + company
     if position and position != "상세내용 참조":
         main_title += " - " + position
 
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📢 " + main_title)
+    lines.append(E["line"])
+    lines.append(E["notice"] + " " + main_title)
     if deadline:
         if "채용시" in deadline or "상시" in deadline:
-            lines.append("     🕐 상시채용")
+            lines.append("     " + E["clock"] + " 상시채용")
         else:
-            lines.append("     🕐 마감: ~" + deadline)
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("     " + E["clock"] + " 마감: ~" + deadline)
+    lines.append(E["line"])
     lines.append("")
 
-    lines.append("📌 채용 정보")
+    # 채용 정보
+    lines.append(E["info"] + " 채용 정보")
     lines.append("")
 
     if company and company != "비공개":
-        lines.append("🏢 회사명: " + company)
+        lines.append(E["company"] + " 회사명: " + company)
     if position and position != "상세내용 참조":
-        lines.append("👔 모집분야: " + position)
+        lines.append(E["job"] + " 모집분야: " + position)
     if career:
-        lines.append("💼 경력구분: " + career.rstrip(".").strip())
+        lines.append(E["career"] + " 경력구분: " + career.rstrip(".").strip())
     if location:
-        lines.append("📍 근무지: " + location)
+        lines.append(E["loc"] + " 근무지: " + location)
     if deadline:
-        lines.append("📅 마감일: " + deadline)
+        lines.append(E["date"] + " 마감일: " + deadline)
     if category:
-        lines.append("🏷️ 분류: " + category)
+        lines.append(E["tag"] + " 분류: " + category)
 
+    # 담당업무
     duty = clean_forbidden_words(job.get("duty", ""))
     duty = strip_urls_from_duty(duty, apply_link)
 
@@ -149,69 +419,25 @@ def build_content(job):
         if len(duty) > 600:
             duty = duty[:597] + "..."
         lines.append("")
-        lines.append("📝 담당업무")
+        lines.append(E["duty"] + " 담당업무")
         lines.append(duty)
 
     lines.append("")
-    lines.append("─────────────────────────")
+    lines.append(E["sub_line"])
     lines.append("")
 
+    # 지원 링크
     if apply_link and "isafety" not in apply_link.lower():
-        lines.append("🔗 지원/상세 링크")
+        lines.append(E["link"] + " 지원/상세 링크")
         lines.append(apply_link)
         lines.append("")
     else:
         if company and company != "비공개":
-            lines.append("🔗 지원 방법")
-            lines.append("→ 채용사이트에서 '" + company + "' 검색")
-            lines.append("→ 또는 회사 공식 홈페이지 채용페이지 확인")
+            lines.append(E["link"] + " 지원 방법")
+            lines.append(E["arrow"] + " 채용사이트에서 '" + company + "' 검색")
+            lines.append(E["arrow"] + " 또는 회사 공식 홈페이지 채용페이지 확인")
             lines.append("")
 
-    lines.append("─────────────────────────")
-    lines.append("※ 지원 전 반드시 채용공고 원문을 확인해주세요.")
-    lines.append("※ 본 정보는 참고용이며, 채용 조건은 변경될 수 있습니다.")
-
-    return "\n".join(lines)
-
-
-# ==========================================================
-# 🚀 게시 (한글 그대로 UTF-8 전송)
-# ==========================================================
-def post_to_cafe(job, access_token):
-    subject = build_subject(job)
-    content = build_content(job)
-
-    print("  📝 제목:", subject)
-
-    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
-    headers = {
-        "Authorization": "Bearer " + access_token,
-        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-    }
-
-    # ★ HTML 엔티티 변환 없이 한글 그대로!
-    payload = {
-        "subject": subject,
-        "content": content,
-        "openyn": "true",
-    }
-
-    res = requests.post(url, headers=headers, data=payload, timeout=15)
-
-    print("  📨 상태코드:", res.status_code)
-    print("  📨 응답:", res.text[:300])
-
-    try:
-        result = res.json()
-    except Exception:
-        print("  ❌ JSON 파싱 실패")
-        return None
-
-    status = result.get("message", {}).get("status")
-    if status != "200":
-        print("  ❌ 실패")
-        return None
-
-    article_url = result["message"]["result"]["articleUrl"]
-    print("  ✅ 성공:", article_url)
-    return article_url
+    lines.append(E["sub_line"])
+    lines.append(E["check"] + " 지원 전 반드시 채용공고 원문을 확인해주세요.")
+    lines.append
