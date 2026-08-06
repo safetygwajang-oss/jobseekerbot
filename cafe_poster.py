@@ -59,13 +59,10 @@ def clean_company_for_title(company):
 
 
 # ==========================================================
-# 🎯 제목 생성 - 한글 그대로
+# 🎯 제목 생성
 # ==========================================================
 def build_subject(job):
-    """
-    제목: [경력] [금강종합건설] (~26-08-28)
-    한글 그대로 사용 (네이버 이중 인코딩으로 처리)
-    """
+    """제목: [경력] [회사명] (~26-08-28)"""
     career = job.get("career", "").strip()
     company = job.get("company", "").strip()
     deadline = job.get("deadline", "").strip()
@@ -201,34 +198,33 @@ def build_content(job):
 
 
 # ==========================================================
-# 🚀 게시 - 네이버 공식 이중 인코딩 방식!
+# 🚀 게시 - 네이버 공식 이중 인코딩 방식
 # ==========================================================
 def naver_double_encode(text):
-    """
-    ⭐ 네이버 카페 API 전용 이중 URL 인코딩
-    
-    네이버 공식 문서 방식:
-    1. UTF-8로 URL 인코딩 (%EA%B2%BD%EB%A0%A5)
-    2. 그 결과를 다시 EUC-KR base로 URL 인코딩
-    
-    Python에서는:
-    1. urllib.parse.quote() 로 UTF-8 인코딩
-    2. 결과 문자열을 다시 quote() 로 인코딩 (%를 %25로)
-    """
+    """네이버 카페 API 전용 이중 URL 인코딩"""
     if not text:
         return ""
-    # 1차: UTF-8 URL 인코딩
     first = quote(text, safe='')
-    # 2차: 다시 URL 인코딩 (%를 %25로 변환)
     second = quote(first, safe='')
     return second
 
 
+def convert_newlines_to_br(text):
+    """
+    ⭐ 본문 줄바꿈을 HTML <br> 태그로 변환
+    - 네이버 카페 API는 \n을 무시하고 다 붙여버림
+    - <br> 태그로 바꿔야 줄바꿈이 유지됨
+    """
+    if not text:
+        return text
+    # \r\n, \r, \n 모두 <br>로 변환
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\n", "<br>")
+    return text
+
+
 def post_to_cafe(job, access_token):
-    """
-    네이버 카페 API 이중 인코딩 방식으로 게시
-    (공식 문서 기반)
-    """
+    """네이버 카페 API 이중 인코딩 방식으로 게시"""
     subject = build_subject(job)
     content = build_content(job)
 
@@ -240,11 +236,13 @@ def post_to_cafe(job, access_token):
         "Content-Type": "application/x-www-form-urlencoded",
     }
 
-    # ⭐ 네이버 방식 이중 인코딩
-    subject_encoded = naver_double_encode(subject)
-    content_encoded = naver_double_encode(content)
+    # ⭐ 본문 줄바꿈을 <br>로 변환 (핵심 수정!)
+    content_html = convert_newlines_to_br(content)
 
-    # body 직접 조립
+    # 네이버 이중 인코딩
+    subject_encoded = naver_double_encode(subject)
+    content_encoded = naver_double_encode(content_html)
+
     body = "subject=" + subject_encoded + "&content=" + content_encoded + "&openyn=true"
 
     try:
@@ -265,60 +263,13 @@ def post_to_cafe(job, access_token):
         result = res.json()
     except Exception:
         print("  ❌ JSON 파싱 실패")
-        return _post_fallback_simple(subject, content, access_token)
+        return None
 
     status = result.get("message", {}).get("status")
     if status != "200":
         print("  ❌ 실패 - status:", status)
-        return _post_fallback_simple(subject, content, access_token)
+        return None
 
     article_url = result["message"]["result"]["articleUrl"]
     print("  ✅ 성공:", article_url)
-    return article_url
-
-
-def _post_fallback_simple(subject, content, access_token):
-    """
-    폴백: 단일 URL 인코딩 방식 (Python 개발자 커뮤니티 검증 방식)
-    from urllib.parse import urlencode
-    data = urlencode({'subject': subject, 'content': content}).encode()
-    """
-    print("  🔁 폴백: 단일 URL 인코딩 재시도...")
-
-    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
-    headers = {
-        "Authorization": "Bearer " + access_token,
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
-    from urllib.parse import urlencode
-    payload = {
-        "subject": subject,
-        "content": content,
-        "openyn": "true",
-    }
-    body = urlencode(payload).encode("utf-8")
-
-    try:
-        res = requests.post(url, headers=headers, data=body, timeout=15)
-    except Exception as e:
-        print("  ❌ [폴백] 요청 예외:", type(e).__name__)
-        return None
-
-    print("  📨 [폴백] 상태코드:", res.status_code)
-    print("  📨 [폴백] 응답:", res.text[:300])
-
-    try:
-        result = res.json()
-    except Exception:
-        print("  ❌ [폴백] JSON 파싱 실패")
-        return None
-
-    status = result.get("message", {}).get("status")
-    if status != "200":
-        print("  ❌ [폴백] 실패")
-        return None
-
-    article_url = result["message"]["result"]["articleUrl"]
-    print("  ✅ [폴백] 성공:", article_url)
     return article_url
