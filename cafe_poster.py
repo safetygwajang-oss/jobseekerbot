@@ -1,11 +1,14 @@
 import os
-import hashlib
+import re
 import requests
 
 CAFE_ID = "31767633"
 MENU_ID = "10"
 
 
+# ==========================================================
+# 네이버 API 토큰
+# ==========================================================
 def get_access_token():
     CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
     CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
@@ -27,6 +30,9 @@ def get_access_token():
     return data["access_token"]
 
 
+# ==========================================================
+# 텍스트 유틸
+# ==========================================================
 def to_html_entity(text):
     """비-ASCII 문자를 HTML 엔티티로 변환"""
     result = ""
@@ -39,7 +45,7 @@ def to_html_entity(text):
 
 
 def clean_forbidden_words(text):
-    """출처 노출 방지"""
+    """출처(iSAFETY) 노출 방지"""
     if not text:
         return text
     forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety", "아이세이프티", "아이세이프"]
@@ -54,55 +60,126 @@ def clean_forbidden_words(text):
 
 
 # ==========================================================
-# 🎯 제목 영문화 - PC 리스트 한글 깨짐 방지
+# 🎯 제목 생성 - 영문 회사명 조합
 # ==========================================================
-
-# 카테고리 → 영문 매핑
-CATEGORY_MAP = {
-    "제조": "MFG",
-    "건설": "CONST",
-    "화학": "CHEM",
-    "물류": "LOGI",
-    "서비스": "SVC",
-    "IT": "IT",
-    "연구": "R&D",
-    "기타": "ETC",
-    "공기업": "PUB",
-    "공공기관": "PUB",
-    "대기업": "BIG",
-    "중견기업": "MID",
-    "중소기업": "SMB",
+CAREER_MAP = {
+    "신입": "NEW",
+    "경력": "EXP",
+    "신입/경력": "NEW/EXP",
+    "무관": "ANY",
+    "인턴": "INTERN",
 }
 
+# 유명 기업 매핑
+FAMOUS_COMPANIES = {
+    "삼성전자": "SAMSUNG",
+    "삼성물산": "SAMSUNG-CT",
+    "삼성디스플레이": "SAMSUNG-DP",
+    "삼성SDI": "SAMSUNG-SDI",
+    "삼성엔지니어링": "SAMSUNG-ENG",
+    "삼성중공업": "SAMSUNG-HI",
+    "삼성바이오로직스": "SAMSUNG-BIO",
+    "SK하이닉스": "SK-HYNIX",
+    "SK이노베이션": "SK-INNO",
+    "SK에너지": "SK-ENERGY",
+    "SK온": "SK-ON",
+    "LG전자": "LG-ELEC",
+    "LG화학": "LG-CHEM",
+    "LG디스플레이": "LG-DP",
+    "LG에너지솔루션": "LG-ES",
+    "LG유플러스": "LG-UPLUS",
+    "현대자동차": "HYUNDAI-MOTOR",
+    "현대차": "HYUNDAI-MOTOR",
+    "기아": "KIA",
+    "현대모비스": "MOBIS",
+    "현대건설": "HYUNDAI-ENC",
+    "현대엔지니어링": "HYUNDAI-ENG",
+    "현대제철": "HYUNDAI-STEEL",
+    "포스코": "POSCO",
+    "포스코이앤씨": "POSCO-ENC",
+    "포스코퓨처엠": "POSCO-FM",
+    "롯데케미칼": "LOTTE-CHEM",
+    "롯데건설": "LOTTE-ENC",
+    "GS건설": "GS-ENC",
+    "GS칼텍스": "GS-CALTEX",
+    "대우건설": "DAEWOO-ENC",
+    "DL이앤씨": "DL-ENC",
+    "SK에코플랜트": "SK-ECO",
+    "한화건설": "HANWHA-ENC",
+    "한화솔루션": "HANWHA-SOL",
+    "두산에너빌리티": "DOOSAN-ENB",
+    "HD현대중공업": "HD-HHI",
+    "메디톡스": "MEDYTOX",
+    "에어퍼스트": "AIRFIRST",
+    "금강종합건설": "KUMKANG",
+    "CJ제일제당": "CJ-CJ",
+    "CJ대한통운": "CJ-LOG",
+    "쿠팡": "COUPANG",
+    "네이버": "NAVER",
+    "카카오": "KAKAO",
+}
 
-def make_short_id(job):
-    """회사명+모집분야 기반 4자리 고유 ID"""
-    company = job.get("company", "")
-    position = job.get("position", "")
-    seed = (company + "|" + position).encode("utf-8")
-    h = hashlib.md5(seed).hexdigest().upper()
-    return h[:4]
+CHOSUNG = ['G', 'GG', 'N', 'D', 'DD', 'R', 'M', 'B', 'BB', 'S', 'SS', '', 'J', 'JJ', 'CH', 'K', 'T', 'P', 'H']
+JUNGSUNG = ['A', 'AE', 'YA', 'YAE', 'EO', 'E', 'YEO', 'YE', 'O', 'WA', 'WAE', 'OE', 'YO', 'U', 'WO', 'WE', 'WI', 'YU', 'EU', 'YI', 'I']
+JONGSUNG = ['', 'G', 'GG', 'GS', 'N', 'NJ', 'NH', 'D', 'L', 'LG', 'LM', 'LB', 'LS', 'LT', 'LP', 'LH', 'M', 'B', 'BS', 'S', 'SS', 'NG', 'J', 'CH', 'K', 'T', 'P', 'H']
+
+
+def korean_to_roman(text):
+    """한글을 간이 로마자로 변환 (식별용)"""
+    result = []
+    for ch in text:
+        code = ord(ch)
+        if 0xAC00 <= code <= 0xD7A3:
+            base = code - 0xAC00
+            cho = base // (21 * 28)
+            jung = (base % (21 * 28)) // 28
+            jong = base % 28
+            result.append(CHOSUNG[cho] + JUNGSUNG[jung] + JONGSUNG[jong])
+        elif ch.isascii():
+            result.append(ch.upper() if ch.isalpha() else ch)
+        elif ch in " -_/":
+            result.append("-")
+
+    roman = "".join(result)
+    if len(roman) > 20:
+        roman = roman[:20]
+    return roman if roman else "COMPANY"
+
+
+def romanize_company(company):
+    """회사명을 영문(로마자)로 변환"""
+    if not company:
+        return "COMPANY"
+
+    # 법인 형태 표기 제거
+    company = re.sub(r"\(주\)|\(유\)|\(재\)|\(사\)|\(합\)|\(합자\)|\(사단법인\)|\(재단법인\)", "", company)
+    company = company.replace("주식회사", "").replace("유한회사", "").replace("㈜", "")
+    company = company.strip()
+
+    if company in FAMOUS_COMPANIES:
+        return FAMOUS_COMPANIES[company]
+
+    return korean_to_roman(company)
 
 
 def build_subject(job):
     """
-    제목: ASCII만 사용 (PC 리스트 깨짐 방지)
-    형식: [MFG] JOB #A1B2 (~26-08-18)
+    제목: [EXP] [KUMKANG] (~26-08-28)
+    - 완전 ASCII: PC 리스트에서 안 깨짐
+    - 신입/경력 + 영문 회사명 + 마감일
     """
-    category = job.get("category", "기타")
-    deadline = job.get("deadline", "")
+    career = job.get("career", "").strip()
+    company = job.get("company", "").strip()
+    deadline = job.get("deadline", "").strip()
 
-    # 카테고리 영문 변환
-    eng_cat = CATEGORY_MAP.get(category, "JOB")
-    if not eng_cat.isascii():
-        eng_cat = "JOB"
+    career_clean = career.rstrip(".").strip()
+    career_eng = CAREER_MAP.get(career_clean, "JOB")
 
-    # 고유 ID
-    short_id = make_short_id(job)
-    
-    subject = "[" + eng_cat + "] JOB #" + short_id
+    company_clean = clean_forbidden_words(company)
+    company_eng = romanize_company(company_clean) if company_clean else "COMPANY"
 
-    # 마감일 (ASCII만 통과)
+    subject = "[" + career_eng + "] [" + company_eng + "]"
+
     if deadline:
         if "채용시" in deadline or "상시" in deadline:
             subject += " (OPEN)"
@@ -113,21 +190,52 @@ def build_subject(job):
             if safe_deadline:
                 subject += " (~" + safe_deadline + ")"
 
+    if len(subject) > 80:
+        subject = subject[:77] + "..."
+
     return subject
 
 
+# ==========================================================
+# 📝 본문 생성
+# ==========================================================
+def strip_urls_from_duty(duty, apply_link):
+    """담당업무 텍스트에서 URL 라인 제거 (하단 지원링크와 중복 방지)"""
+    if not duty:
+        return duty
+
+    lines = duty.split("\n")
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("http://") or stripped.startswith("https://"):
+            continue
+        if "http" in stripped and len(stripped) < 200:
+            no_url = re.sub(r'https?://[^\s]+', '', stripped).strip()
+            if len(no_url) > 15:
+                cleaned.append(no_url)
+            continue
+        cleaned.append(line)
+
+    result = "\n".join(cleaned)
+    while "\n\n\n" in result:
+        result = result.replace("\n\n\n", "\n\n")
+    return result.strip()
+
+
 def build_content(job):
-    """본문 - 헤드라인 박스 + 정제된 정보"""
+    """본문 생성"""
     lines = []
-    
+
     company = clean_forbidden_words(job.get("company", ""))
     position = clean_forbidden_words(job.get("position", ""))
     category = job.get("category", "")
     deadline = job.get("deadline", "")
     career = job.get("career", "")
     location = job.get("location", "")
+    apply_link = job.get("apply_link", "")
 
-    # ========== 헤드라인 박스 (진짜 제목 역할) ==========
+    # 헤드라인
     main_title = "[" + (category or "채용") + "]"
     if company and company != "비공개":
         main_title += " " + company
@@ -143,9 +251,8 @@ def build_content(job):
             lines.append("     🕐 마감: ~" + deadline)
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append("")
-    lines.append("")
 
-    # ========== 채용 정보 요약 ==========
+    # 채용 정보
     lines.append("📌 채용 정보")
     lines.append("")
 
@@ -154,7 +261,7 @@ def build_content(job):
     if position and position != "상세내용 참조":
         lines.append("👔 모집분야: " + position)
     if career:
-        lines.append("💼 경력구분: " + career)
+        lines.append("💼 경력구분: " + career.rstrip(".").strip())
     if location:
         lines.append("📍 근무지: " + location)
     if deadline:
@@ -162,13 +269,13 @@ def build_content(job):
     if category:
         lines.append("🏷️ 분류: " + category)
 
-    # ========== 담당업무 (정제된 본문만) ==========
+    # 담당업무 (URL 제거)
     duty = clean_forbidden_words(job.get("duty", ""))
-    duty = clean_duty_text(duty)  # 추가 정제
-    
+    duty = strip_urls_from_duty(duty, apply_link)
+
     if duty and len(duty) > 20:
-        if len(duty) > 500:
-            duty = duty[:497] + "..."
+        if len(duty) > 600:
+            duty = duty[:597] + "..."
         lines.append("")
         lines.append("📝 담당업무")
         lines.append(duty)
@@ -177,8 +284,7 @@ def build_content(job):
     lines.append("─────────────────────────")
     lines.append("")
 
-    # ========== 지원 링크 ==========
-    apply_link = job.get("apply_link", "")
+    # 지원 링크 (한 번만)
     if apply_link and "isafety" not in apply_link.lower():
         lines.append("🔗 지원/상세 링크")
         lines.append(apply_link)
@@ -197,74 +303,9 @@ def build_content(job):
     return "\n".join(lines)
 
 
-def clean_duty_text(text):
-    """
-    담당업무 텍스트 추가 정제
-    - 이미 다른 필드에 있는 정보 제거 (회사명, 마감일 등)
-    - 불필요한 라벨 제거
-    """
-    if not text:
-        return ""
-    
-    # BOM 제거
-    text = text.replace("\ufeff", "")
-    
-    # 라인 단위로 처리
-    lines = text.split("\n")
-    cleaned = []
-    
-    # 스킵할 라벨 라인 (완전 일치)
-    skip_exact = {
-        "구인정보", "페이지 정보", "관련링크", "첨부파일",
-        "작성일", "조회수", "본문", "채용내용", "상세내용",
-        "경력", "경력.", "신입", "신입.", "신입/경력",
-        "근무지", "마감일", "회사명", "회사", "기업명"
-    }
-    
-    # 스킵할 라인 (접두어로 시작)
-    skip_prefix = [
-        "작성일 ", "조회 ", "추천 ", "관련링크",
-    ]
-    
-    prev_line = ""
-    for line in lines:
-        line = line.strip()
-        if not line:
-            if prev_line:  # 연속 빈 줄 방지
-                cleaned.append("")
-                prev_line = ""
-            continue
-        
-        # 완전 일치 스킵
-        if line in skip_exact:
-            continue
-        
-        # 접두어 스킵
-        if any(line.startswith(p) for p in skip_prefix):
-            continue
-        
-        # 시간 정보만 있는 라인 (예: "1시간 전", "32")
-        if line.endswith("전") and len(line) < 10:
-            continue
-        if line.isdigit() and len(line) < 5:
-            continue
-        
-        # 날짜만 있는 라인 (예: "26-08-18")
-        if len(line) < 12 and all(c.isdigit() or c == "-" for c in line):
-            continue
-        
-        cleaned.append(line)
-        prev_line = line
-    
-    result = "\n".join(cleaned).strip()
-    
-    # 연속 공백 정리
-    while "\n\n\n" in result:
-        result = result.replace("\n\n\n", "\n\n")
-    
-    return result
-
-
+# ==========================================================
+# 게시
+# ==========================================================
 def post_to_cafe(job, access_token):
     subject = build_subject(job)
     content = build_content(job)
