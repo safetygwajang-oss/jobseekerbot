@@ -121,21 +121,16 @@ def extract_apply_link(soup, raw_html):
 
 
 def fetch_detail(detail_url):
-    """상세 페이지 - 실패해도 빈 값 반환 (전체 중단 방지)"""
+    """상세 페이지에서 본문 + 외부 링크 추출 (본문 정제 강화)"""
     try:
         res = safe_get(detail_url, timeout=15)
         raw_html = res.text
         soup = BeautifulSoup(raw_html, "lxml")
         
-        body_text = ""
-        best = ""
-        for c in soup.find_all(["div", "td", "section", "article"]):
-            txt = c.get_text("\n", strip=True)
-            if any(kw in txt for kw in ["자격요건", "주요업무", "우대사항", "담당업무"]):
-                if 50 < len(txt) < 3000 and len(txt) > len(best):
-                    best = txt
-        body_text = best
+        # ==== 본문 텍스트 추출 (정제 로직 강화) ====
+        body_text = extract_clean_body(soup)
         
+        # ==== 외부 지원 링크 추출 ====
         apply_link = extract_apply_link(soup, raw_html)
         
         if apply_link:
@@ -151,6 +146,83 @@ def fetch_detail(detail_url):
     except Exception as e:
         print(f"    ⚠️ 상세페이지 스킵: {type(e).__name__}")
         return "", ""
+
+
+def extract_clean_body(soup):
+    """
+    상세페이지에서 '진짜 본문(담당업무)'만 깨끗하게 추출
+    전략:
+      1) 페이지 전체 텍스트에서 '본문' 라벨 이후 부분만 잘라내기
+      2) 불필요한 라벨/메타정보 제거
+      3) 너무 길면 자르기
+    """
+    # 1) 전체 텍스트 확보
+    full_text = soup.get_text("\n", strip=True)
+    
+    # 2) '본문' 라벨 이후만 추출
+    body_start_markers = ["본문", "상세내용", "채용내용", "모집내용", "공고내용"]
+    body = ""
+    for marker in body_start_markers:
+        idx = full_text.find("\n" + marker + "\n")
+        if idx == -1:
+            idx = full_text.find(marker + "\n")
+        if idx != -1:
+            # 마커 이후 텍스트만 추출
+            body = full_text[idx + len(marker):].strip()
+            break
+    
+    # 3) 마커 못 찾으면 fallback: 기존 방식
+    if not body:
+        candidates = soup.find_all(["div", "td", "section", "article"])
+        best = ""
+        for c in candidates:
+            txt = c.get_text("\n", strip=True)
+            if any(kw in txt for kw in ["자격요건", "주요업무", "우대사항", "담당업무"]):
+                if 50 < len(txt) < 3000 and len(txt) > len(best):
+                    best = txt
+        body = best
+    
+    # 4) 뒤쪽 불필요한 섹션 잘라내기 (하단 링크, 댓글 등)
+    end_markers = [
+        "이전글", "다음글", "목록", "댓글", 
+        "관련 채용정보", "관련채용정보",
+        "Copyright", "COPYRIGHT", "이용약관", "개인정보처리방침",
+        "SNS 공유", "공유하기"
+    ]
+    for marker in end_markers:
+        idx = body.find(marker)
+        if idx > 100:  # 너무 앞쪽이면 본문 자체일 수 있으니 제외
+            body = body[:idx].strip()
+    
+    # 5) 불필요한 라벨 라인 제거
+    skip_lines = [
+        "구인정보", "페이지 정보", "관련링크", "첨부파일",
+        "작성일", "조회수", "조회", "추천", "좋아요",
+        "이전글", "다음글", "목록"
+    ]
+    lines = body.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # 스킵 대상 라벨과 정확히 일치하는 라인 제외
+        if line in skip_lines:
+            continue
+        # BOM 문자 제거
+        line = line.replace("\ufeff", "").strip()
+        if not line:
+            continue
+        cleaned_lines.append(line)
+    
+    body = "\n".join(cleaned_lines)
+    
+    # 6) 연속된 빈 줄 정리
+    while "\n\n\n" in body:
+        body = body.replace("\n\n\n", "\n\n")
+    
+    return body.strip()
+
 
 
 def get_jobs_from_page(page=1, with_detail=True):
